@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+dist/
+build/
+
+# Java / Maven
+target/
+*.class
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+
+# Secrets & local data (never commit these)
+.env
+*.db
+*.sqlite3
+tokens.json
+
+# OS junk
+.DS_Store
+Thumbs.db

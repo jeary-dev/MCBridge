@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcbridge-bot"
+version = "0.1.0"
+description = "MCBridge: the Discord bot and WebSocket gateway that Minecraft servers connect to."
+requires-python = ">=3.10"
+dependencies = ["aiohttp>=3.9", "discord.py>=2.4"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[tool.setuptools]
+packages = ["mcbridge_bot"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning:discord.*"]
