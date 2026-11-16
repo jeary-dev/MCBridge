@@ -21,3 +21,35 @@ allow:
   # Run ANY console command from Discord (op, stop, ban...).
   # Only turn this on if you fully trust everyone with admin access to the Discord bot.
   console: false
+
+
+#  Messages
+#  Use classic colour codes, MiniMessage, or both in the same line:
+#    &-codes:      &8 dark grey, &a green, &7 grey, &f white, &l bold, &r reset, &#3ddc84 hex
+#    MiniMessage:  <gray>, <#3ddc84>, <gradient:#3ddc84:#3987e5>text</gradient>,
+#                  <hover:show_text:'hi'>...</hover>, <click:suggest_command:'/cmd'>...</click>
+#                  https://docs.advntr.dev/minimessage/format.html
+#  Write \<code> to show a literal <code>.
+#  Delete a line to go back to the built-in default.
+messages:
+  # Shown in front of every MCBridge message
+  prefix: "&8[&#3ddc84MCBridge&8] "
+  # How Discord chat looks in-game.  Placeholders: <author> <message>
+  discord-chat: "<hover:show_text:'<gray>Sent from Discord'><dark_gray>[</dark_gray><#5865f2>Discord</#5865f2><dark_gray>]</dark_gray> <#b5bac1><author></#b5bac1></hover><dark_gray> » </dark_gray><white><message>"
+
+  # Account linking (/discord link).  Placeholder: <message> (the reply from the bot)
+  account-usage: "<gray>Run <white>/account link</white> in Discord to get a code, then type <white><click:suggest_command:'/discord link '>/discord link \\<code></click></white>"
+  account-linking: "<gray>Linking your account..."
+  account-linked: "<#3ddc84><message>"
+  account-link-failed: "<#ff6b6b><message>"
+  account-bad-code: "<#ff6b6b>That doesn't look like a link code."
+  account-offline: "<#ff6b6b>This server isn't connected to Discord right now. Try again later."
+
+  # /mcbridge (admins).  Placeholders: <server> <state> <name> <reason>
+  status-connected: "<#3ddc84>●</#3ddc84> <gray>Connected to Discord as <white><server></white>"
+  status-not-linked: "<#ff6b6b>●</#ff6b6b> <gray>Not linked yet. Run <white>/setup</white> in Discord, then <white><click:suggest_command:'/mcbridge link '>/mcbridge link \\<code></click></white>"
+  status-other: "<#fab219>●</#fab219> <gray>Bot connection: <white><state></white>. Check the console for details."
+  reloaded: "<gray>Config reloaded. Reconnecting..."
+  linking: "<gray>Linking..."
+  link-success: "<#3ddc84>Linked as <white><name></white>!</#3ddc84> <gray>Connecting to Discord..."
+  link-failed: "<#ff6b6b>Linking failed:</#ff6b6b> <gray><reason>"

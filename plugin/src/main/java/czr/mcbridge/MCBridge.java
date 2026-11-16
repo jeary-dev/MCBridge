@@ -23,12 +23,14 @@ public final class MCBridge extends JavaPlugin {
     private static final long MAX_ICON_BYTES = 18 * 1024;
 
     private BridgeClient client;
+    private Messages messages;
     private HeartbeatSampler sampler;
     private boolean startAnnounced;
 
     @Override
     public void onEnable() {
         saveDefaultConfig();
+        messages = new Messages(this);
         sampler = new HeartbeatSampler(this);
         sampler.start();
         getServer().getPluginManager().registerEvents(new EventsListener(this), this);
@@ -124,6 +126,10 @@ public final class MCBridge extends JavaPlugin {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    Messages messages() {
+        return messages;
     }
 
     BridgeClient client() {

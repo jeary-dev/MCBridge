@@ -2,8 +2,6 @@ package czr.mcbridge;
 
 import com.google.gson.JsonObject;
 import czr.mcbridge.core.BridgeClient;
-import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -25,30 +23,29 @@ final class DiscordCommand implements CommandExecutor, TabCompleter {
 
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
+        Messages msg = plugin.messages();
         if (!(sender instanceof Player player)) {
-            sender.sendMessage(Component.text("Only players can link a Discord account.", NamedTextColor.RED));
+            msg.send(sender, "account-players-only");
             return true;
         }
         if (args.length < 2 || !args[0].equalsIgnoreCase("link")) {
-            player.sendMessage(Component.text("Run /account link in Discord to get a code, then type ",
-                    NamedTextColor.GRAY).append(Component.text("/discord link <code>", NamedTextColor.WHITE)));
+            msg.send(player, "account-usage");
             return true;
         }
         if (!CODE.matcher(args[1]).matches()) {
-            player.sendMessage(Component.text("That doesn't look like a link code.", NamedTextColor.RED));
+            msg.send(player, "account-bad-code");
             return true;
         }
         BridgeClient client = plugin.client();
         if (client == null || !client.isConnected()) {
-            player.sendMessage(Component.text("This server isn't connected to Discord right now. Try again later.",
-                    NamedTextColor.RED));
+            msg.send(player, "account-offline");
             return true;
         }
         JsonObject data = new JsonObject();
         data.add("player", MCBridge.player(player));
         data.addProperty("code", args[1]);
         plugin.sendEvent("event.link_request", data);
-        player.sendMessage(Component.text("Linking...", NamedTextColor.GRAY));
+        msg.send(player, "account-linking");
         return true;
     }
 

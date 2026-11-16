@@ -7,7 +7,6 @@ import czr.mcbridge.core.Envelope;
 import czr.mcbridge.core.Replies;
 import czr.mcbridge.core.Replies.ErrorCode;
 import net.kyori.adventure.text.Component;
-import net.kyori.adventure.text.format.NamedTextColor;
 import org.bukkit.Bukkit;
 import org.bukkit.OfflinePlayer;
 import org.bukkit.command.CommandSender;
@@ -53,12 +52,9 @@ final class PaperCommandHandler implements CommandHandler {
         if (author == null || message == null || message.isBlank() || message.length() > MAX_CHAT) {
             return done(Replies.error(ErrorCode.INVALID, "missing or bad actor/message"));
         }
-        Component line = Component.text()
-                .append(Component.text("[Discord] ", NamedTextColor.BLUE))
-                .append(Component.text(author + ": ", NamedTextColor.GRAY))
-                .append(Component.text(message))
-                .build();
         return onMainThread(() -> {
+            Component line = plugin.messages().render("discord-chat",
+                    Messages.text("author", author), Messages.text("message", message));
             Bukkit.broadcast(line);
             return Replies.ok("sent");
         });
@@ -133,10 +129,8 @@ final class PaperCommandHandler implements CommandHandler {
         return onMainThread(() -> {
             Player player = Bukkit.getPlayer(target);
             if (player == null) return Replies.ok("player is offline");
-            player.sendMessage(Component.text()
-                    .append(Component.text("[Discord] ", NamedTextColor.BLUE))
-                    .append(Component.text(message, ok ? NamedTextColor.GREEN : NamedTextColor.RED))
-                    .build());
+            plugin.messages().send(player, ok ? "account-linked" : "account-link-failed",
+                    Messages.text("message", message));
             return Replies.ok("sent");
         });
     }
