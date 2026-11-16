@@ -1,13 +1,22 @@
-/** Hanko-style square seal with 橋 ("bridge"). */
+/** The bridge mark (same drawing as src/app/icon.svg). Decorative: always paired with a text label. */
 export function Seal({ size = 28 }: { size?: number }) {
   return (
-    <span
+    <svg
       aria-hidden
-      className="inline-grid shrink-0 place-items-center bg-paper font-jp font-extrabold leading-none text-ink"
-      style={{ width: size, height: size, fontSize: size * 0.68, borderRadius: 3 }}
+      viewBox="0 0 32 32"
+      width={size}
+      height={size}
+      className="block shrink-0"
     >
-      橋
-    </span>
+      <rect width="32" height="32" rx="4" fill="#edebe6" />
+      <path
+        d="M5 22h22M7 22c3-8 15-8 18 0M11 22v-4.5M16 22v-6M21 22v-4.5"
+        fill="none"
+        stroke="#0b0b0c"
+        strokeWidth="2.4"
+        strokeLinecap="square"
+      />
+    </svg>
   );
 }
 

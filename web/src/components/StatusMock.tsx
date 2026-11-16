@@ -97,8 +97,8 @@ function ActivityGraph() {
         {[0.25, 0.5, 0.75].map((f) => (
           <line key={f} x1="0" x2={W} y1={H * f} y2={H * f} stroke="rgb(237 235 230 / .06)" />
         ))}
-        <path className="graph-fill" d={`${players} L${W} ${H} L0 ${H} Z`} fill="url(#fillPlayers)" />
-        <path className="graph-fill" d={tps} fill="none" stroke="#7c7a75" strokeWidth="1" strokeDasharray="3 3" />
+        <path d={`${players} L${W} ${H} L0 ${H} Z`} fill="url(#fillPlayers)" />
+        <path d={tps} fill="none" stroke="#7c7a75" strokeWidth="1" strokeDasharray="3 3" />
         <path
           className="graph-line"
           pathLength={1}
@@ -159,7 +159,7 @@ export function StatusMock() {
             <span className="text-mute">#</span> server-status
           </span>
           <span className="ml-auto flex items-center gap-2 font-mono text-[0.6rem] uppercase tracking-[0.18em] text-mute">
-            <i className="pulse-dot size-1.5 rounded-full bg-paper" /> live
+            <i className="pulse-dot size-1.5 rounded-full bg-accent" /> live
           </span>
         </div>
 
@@ -182,8 +182,8 @@ export function StatusMock() {
                   <div className="min-w-0">
                     <div className="font-display text-[1rem] font-medium tracking-tight">Hinoki SMP</div>
                     <div className="mt-1 flex flex-wrap items-center gap-x-2 text-[0.75rem] text-paper-dim">
-                      <span className="inline-flex items-center gap-1.5 text-paper">
-                        <i className="size-1.5 rounded-full bg-paper" /> Online
+                      <span className="inline-flex items-center gap-1.5 text-accent">
+                        <i className="size-1.5 rounded-full bg-accent" /> Online
                       </span>
                       <span className="text-faint">·</span>
                       <span>Paper 1.21.11</span>

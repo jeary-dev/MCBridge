@@ -4,14 +4,16 @@
  */
 export function BridgeDiagram() {
   const arc = "M 40 120 Q 300 10 560 120";
+  // Cropped to the drawing (top labels at y≈22, last water line at y=150) so there is no dead space below.
+  const viewBox = "0 20 600 136";
   return (
     <div className="relative">
-      <svg viewBox="0 0 600 170" className="block h-auto w-full" role="img" aria-labelledby="bridge-title">
+      <svg viewBox={viewBox} className="block h-auto w-full" role="img" aria-labelledby="bridge-title">
         <title id="bridge-title">
           The plugin inside your Minecraft server connects out to MCBridge, which talks to Discord.
         </title>
         {/* water lines */}
-        {[148, 158, 166].map((y, i) => (
+        {[134, 142, 150].map((y, i) => (
           <line
             key={y}
             x1={60 + i * 30}
@@ -35,12 +37,12 @@ export function BridgeDiagram() {
         {/* towers */}
         <Node x={40} label="Minecraft" sub="Paper plugin" />
         <Node x={300} label="MCBridge" sub="hosted" top={65} filled />
-        <Node x={560} label="Discord" sub="your server" />
+        <Node x={560} label="Discord" sub="your discord" />
       </svg>
 
       {/* packets ride the same arc via offset-path */}
       <div className="pointer-events-none absolute inset-0" aria-hidden>
-        <svg viewBox="0 0 600 170" className="h-full w-full overflow-visible">
+        <svg viewBox={viewBox} className="h-full w-full overflow-visible">
           <foreignObject width="600" height="170">
             <div className="relative h-full w-full">
               <span
@@ -56,7 +58,7 @@ export function BridgeDiagram() {
         </svg>
       </div>
 
-      <div className="mt-6 flex flex-wrap justify-between gap-4 font-mono text-[0.65rem] uppercase tracking-[0.18em] text-mute">
+      <div className="mt-5 flex flex-wrap justify-between gap-4 font-mono text-[0.75rem] uppercase tracking-[0.18em] text-mute">
         <span className="flex items-center gap-2">
           <i className="inline-block size-[7px] bg-paper" /> events, heartbeats →
         </span>

@@ -7,8 +7,10 @@
   --ink-3: #18181b;
   --paper: #edebe6;
   --paper-dim: #b9b6ae;
-  --mute: #7c7a75;
+  --mute: #8a8781; /* ≥4.9:1 on ink, ink-2 and ink-3 (WCAG AA) */
   --faint: #4a4946;
+  --accent: #3ddc84;
+  --accent-hi: #6be7a3;
   --line: rgb(237 235 230 / 0.09);
   --line-strong: rgb(237 235 230 / 0.18);
   --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
@@ -22,6 +24,8 @@
   --color-paper-dim: var(--paper-dim);
   --color-mute: var(--mute);
   --color-faint: var(--faint);
+  --color-accent: var(--accent);
+  --color-accent-hi: var(--accent-hi);
   --color-line: var(--line);
   --color-line-strong: var(--line-strong);
   --font-sans: var(--font-inter), ui-sans-serif, system-ui, sans-serif;
@@ -123,24 +127,6 @@ body::before {
   transform: scaleX(1);
 }
 
-/* Hero headline: each line rises out of a mask */
-.line-mask {
-  display: block;
-  overflow: hidden;
-  padding-bottom: 0.08em;
-}
-.line-mask > span {
-  display: inline-block;
-  transform: translateY(105%);
-  animation: rise 1.2s var(--ease-out) forwards;
-  animation-delay: var(--delay, 0ms);
-}
-@keyframes rise {
-  to {
-    transform: none;
-  }
-}
-
 .fade-in {
   opacity: 0;
   animation: fade 1.2s var(--ease-out) forwards;
@@ -168,11 +154,7 @@ body::before {
 .graph-line {
   stroke-dasharray: 1;
   stroke-dashoffset: 1;
-  animation: draw 2.4s var(--ease-out) 0.9s forwards;
-}
-.graph-fill {
-  opacity: 0;
-  animation: fade 1.6s ease 1.8s forwards;
+  animation: draw 1.6s var(--ease-out) forwards;
 }
 
 /* Command marquee */
@@ -230,10 +212,10 @@ body::before {
 @keyframes pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 0 rgb(237 235 230 / 0.5);
+    box-shadow: 0 0 0 0 rgb(61 220 132 / 0.55);
   }
   50% {
-    box-shadow: 0 0 0 5px rgb(237 235 230 / 0);
+    box-shadow: 0 0 0 5px rgb(61 220 132 / 0);
   }
 }
 

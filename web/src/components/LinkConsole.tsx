@@ -56,7 +56,7 @@ export function LinkConsole() {
       className="border border-line-strong bg-ink-2 font-mono text-[0.78rem] leading-relaxed"
       aria-label={`Server console: ${COMMAND}`}
     >
-      <div className="flex items-center justify-between border-b border-line px-4 py-2.5 text-[0.62rem] uppercase tracking-[0.18em] text-mute">
+      <div className="flex items-center justify-between border-b border-line px-4 py-2.5 text-[0.75rem] uppercase tracking-[0.18em] text-mute">
         <span>server console</span>
         <span>paper 1.21</span>
       </div>

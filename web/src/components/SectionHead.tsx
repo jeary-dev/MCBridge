@@ -13,11 +13,11 @@ type Props = {
 export function SectionHead({ index, label, kanji, title, intro }: Props) {
   return (
     <Reveal className="relative mb-14 md:mb-20">
-      <div className="mb-8 flex items-center gap-4 font-mono text-[0.7rem] uppercase tracking-[0.22em] text-mute">
+      <div className="mb-8 flex items-center gap-4 font-mono text-[0.75rem] uppercase tracking-[0.22em] text-mute">
         <span className="text-paper">{index}</span>
         <span>{label}</span>
         <div className="rule flex-1" style={{ ["--delay" as string]: "200ms" }} />
-        <span lang="ja" className="font-jp text-base tracking-[0.3em] text-paper-dim">
+        <span lang="ja" aria-hidden className="font-jp text-base tracking-[0.3em] text-paper-dim">
           {kanji}
         </span>
       </div>

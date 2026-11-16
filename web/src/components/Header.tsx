@@ -50,7 +50,7 @@ export function Header() {
             href={INVITE_URL}
             target="_blank"
             rel="noopener noreferrer"
-            className="hidden h-9 items-center bg-paper px-4 text-[0.8rem] font-medium text-ink transition-colors duration-300 hover:bg-white sm:inline-flex"
+            className="hidden h-9 items-center bg-accent px-4 text-[0.8rem] font-medium text-ink transition-colors duration-300 hover:bg-accent-hi sm:inline-flex"
           >
             Add to Discord
           </a>
@@ -98,7 +98,7 @@ export function Header() {
                 href={INVITE_URL}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="flex h-12 items-center justify-center bg-paper font-medium text-ink"
+                className="flex h-12 items-center justify-center bg-accent font-medium text-ink transition-colors hover:bg-accent-hi"
               >
                 Add to Discord
               </a>

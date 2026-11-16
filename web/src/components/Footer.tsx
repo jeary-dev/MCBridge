@@ -45,7 +45,7 @@ export function Footer() {
 
         {COLUMNS.map((col) => (
           <div key={col.title} className={col.title === "Project" ? "md:col-span-3" : "md:col-span-2"}>
-            <h3 className="mb-5 font-mono text-[0.68rem] uppercase tracking-[0.22em] text-mute">
+            <h3 className="mb-5 font-mono text-[0.75rem] uppercase tracking-[0.22em] text-mute">
               {col.title}
             </h3>
             <ul className="space-y-3 text-sm">
@@ -59,7 +59,7 @@ export function Footer() {
         ))}
       </div>
 
-      <div className="mx-auto flex max-w-[1240px] flex-col gap-3 border-t border-line px-4 py-6 font-mono text-[0.68rem] uppercase tracking-[0.18em] text-faint sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-10">
+      <div className="mx-auto flex max-w-[1240px] flex-col gap-3 border-t border-line px-4 py-6 font-mono text-[0.75rem] uppercase tracking-[0.18em] text-mute sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-10">
         <span>© {new Date().getFullYear()} MCBridge · mcbridge.dev</span>
         <span>Not affiliated with Mojang, Microsoft or Discord</span>
       </div>

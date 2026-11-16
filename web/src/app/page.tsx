@@ -17,8 +17,6 @@ export const metadata: Metadata = pageMeta({
   absoluteTitle: true,
 });
 
-const WIDE = new Set([0, 3]);
-
 export default function Home() {
   return (
     <>
@@ -59,24 +57,30 @@ export default function Home() {
               as="li"
               key={f.title}
               delay={(i % 4) * 80}
-              className={`group relative flex min-h-[15rem] flex-col bg-ink p-7 transition-colors duration-700 hover:bg-ink-3 ${
-                WIDE.has(i) ? "lg:col-span-2" : ""
-              }`}
+              className="group relative flex min-h-[15rem] flex-col bg-ink p-7 transition-colors duration-700 hover:bg-ink-3"
             >
-              <span className="font-mono text-[0.68rem] tracking-[0.2em] text-faint transition-colors duration-500 group-hover:text-paper">
+              <span className="font-mono text-[0.75rem] tracking-[0.2em] text-mute transition-colors duration-500 group-hover:text-paper">
                 {String(i + 1).padStart(2, "0")}
               </span>
               <h3 className="mt-8 font-display text-[1.3rem] font-medium leading-tight tracking-[-0.02em]">
                 {f.title}
               </h3>
-              <p className="mt-3 max-w-md text-[0.92rem] leading-relaxed text-paper-dim">{f.body}</p>
-              <span className="mt-auto pt-8 font-mono text-[0.7rem] text-mute">{f.tag}</span>
+              <p className="mt-3 text-[0.92rem] leading-relaxed text-paper-dim">{f.body}</p>
+              <span className="mt-auto pt-8 font-mono text-[0.75rem] text-mute">{f.tag}</span>
               <span
                 aria-hidden
                 className="absolute inset-x-0 top-0 h-px origin-left scale-x-0 bg-paper transition-transform duration-700 ease-[cubic-bezier(.16,1,.3,1)] group-hover:scale-x-100"
               />
             </Reveal>
           ))}
+          {/* 10 cards in 4 columns leave 2 empty cells; fill them with ink so the hairline grid stays clean */}
+          {FEATURES.length % 4 !== 0 && (
+            <li
+              aria-hidden
+              className="hidden bg-ink lg:block"
+              style={{ gridColumn: `span ${4 - (FEATURES.length % 4)}` }}
+            />
+          )}
         </ul>
       </section>
 
@@ -89,7 +93,7 @@ export default function Home() {
           title="Not another status bot."
           intro="Pinging from the outside tells you online or offline. Running inside the server tells you why."
         />
-        <p className="mb-4 font-mono text-[0.65rem] uppercase tracking-[0.2em] text-mute sm:hidden" aria-hidden>
+        <p className="mb-4 font-mono text-[0.75rem] uppercase tracking-[0.2em] text-mute sm:hidden" aria-hidden>
           Scroll to compare →
         </p>
         <Reveal className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
@@ -97,7 +101,7 @@ export default function Home() {
             <caption className="sr-only">MCBridge compared with status bots and self-hosted chat plugins</caption>
             <thead>
               <tr className="border-b border-line-strong">
-                <th scope="col" className="w-[40%] py-5 pr-4 font-mono text-[0.68rem] font-normal uppercase tracking-[0.2em] text-mute">
+                <th scope="col" className="w-[40%] py-5 pr-4 font-mono text-[0.75rem] font-normal uppercase tracking-[0.2em] text-mute">
                   Feature
                 </th>
                 {COMPARE_COLUMNS.map((c, i) => (
@@ -152,7 +156,7 @@ export default function Home() {
                   {s.kanji}
                 </span>
                 <div>
-                  <span className="font-mono text-[0.68rem] uppercase tracking-[0.2em] text-mute">Step {i + 1}</span>
+                  <span className="font-mono text-[0.75rem] uppercase tracking-[0.2em] text-mute">Step {i + 1}</span>
                   <h3 className="mt-2 font-display text-[1.45rem] font-medium tracking-[-0.02em]">{s.title}</h3>
                   <p className="mt-2 max-w-md leading-relaxed text-paper-dim">{s.body}</p>
                 </div>
@@ -213,63 +217,40 @@ function Hero() {
       <p
         lang="ja"
         aria-hidden
-        className="fade-in absolute right-4 top-36 hidden font-jp text-[0.8rem] tracking-[0.6em] text-faint [writing-mode:vertical-rl] xl:block"
-        style={{ ["--delay" as string]: "1400ms" }}
+        className="absolute right-4 top-36 hidden font-jp text-[0.8rem] tracking-[0.6em] text-faint [writing-mode:vertical-rl] xl:block"
       >
         サーバーとディスコードを結ぶ橋
       </p>
 
       <div className="mx-auto grid max-w-[1240px] items-center gap-16 px-4 pb-24 sm:px-6 md:pb-32 lg:grid-cols-12 lg:px-10">
         <div className="lg:col-span-6">
-          <p
-            className="fade-in mb-8 flex items-center gap-3 font-mono text-[0.7rem] uppercase tracking-[0.22em] text-mute"
-            style={{ ["--delay" as string]: "100ms" }}
-          >
-            <span className="inline-block h-px w-8 bg-mute" />
+          <p className="mb-8 flex items-center gap-3 font-mono text-[0.75rem] uppercase tracking-[0.22em] text-mute">
+            <span aria-hidden className="inline-block h-px w-8 bg-mute" />
             Minecraft × Discord
           </p>
+          {/* One heading, read once. Line breaks are visual only; the spaces keep the accessible name intact. */}
           <h1 className="font-display text-[clamp(2.5rem,5.6vw,4.4rem)] font-medium leading-[1] tracking-[-0.045em]">
-            <span className="sr-only">Your Minecraft server, live in Discord.</span>
-            <span aria-hidden>
-              <span className="line-mask">
-                <span style={{ ["--delay" as string]: "150ms" }}>Your Minecraft</span>
-              </span>
-              <span className="line-mask">
-                <span style={{ ["--delay" as string]: "260ms" }}>server, live</span>
-              </span>
-              <span className="line-mask">
-                <span style={{ ["--delay" as string]: "370ms" }} className="text-paper-dim">
-                  in Discord.
-                </span>
-              </span>
-            </span>
+            <span className="block">Your Minecraft </span>
+            <span className="block">server, live </span>
+            <span className="block text-paper-dim">in Discord.</span>
           </h1>
-          <p
-            className="fade-in mt-8 max-w-[34rem] text-[1.1rem] leading-relaxed text-paper-dim"
-            style={{ ["--delay" as string]: "550ms" }}
-          >
+          <p className="mt-8 max-w-[34rem] text-[1.1rem] leading-relaxed text-paper-dim">
             A Paper plugin and a bot that actually talk to each other. Add the bot, run /setup, type the
             code into your server console. Then get live stats, alerts, chat and more. Nothing to host,
             no port forwarding.
           </p>
-          <div
-            className="fade-in mt-10 flex flex-col gap-3 sm:flex-row"
-            style={{ ["--delay" as string]: "700ms" }}
-          >
+          <div className="mt-10 flex flex-col gap-3 sm:flex-row">
             <Button href={INVITE_URL}>Add to Discord</Button>
             <Button href={DOWNLOAD_URL} variant="ghost">
               Download the plugin
             </Button>
           </div>
-          <p
-            className="fade-in mt-8 font-mono text-[0.72rem] tracking-wide text-mute"
-            style={{ ["--delay" as string]: "850ms" }}
-          >
+          <p className="mt-8 font-mono text-[0.75rem] tracking-wide text-mute">
             Paper 1.21 · Java 21 · Open source (AGPL-3.0)
           </p>
         </div>
 
-        <div className="fade-in lg:col-span-6 lg:pl-6" style={{ ["--delay" as string]: "500ms" }}>
+        <div className="lg:col-span-6 lg:pl-6">
           <StatusMock />
         </div>
       </div>
@@ -321,19 +302,21 @@ function Marquee() {
 function Mark({ value, strong }: { value: Cell; strong?: boolean }) {
   if (value === true)
     return (
-      <span className="inline-flex items-center justify-center">
-        <span className={`block size-2.5 ${strong ? "bg-paper" : "bg-paper-dim"}`} aria-hidden />
-        <span className="sr-only">Yes</span>
+      <span
+        role="img"
+        aria-label="Yes"
+        className={`text-[1.05rem] leading-none ${strong ? "text-paper" : "text-paper-dim"}`}
+      >
+        ✓
       </span>
     );
   if (value === false)
     return (
-      <span className="inline-flex items-center justify-center">
-        <span className="block h-px w-3 bg-faint" aria-hidden />
-        <span className="sr-only">No</span>
+      <span role="img" aria-label="No" className="text-mute">
+        —
       </span>
     );
-  return <span className="font-mono text-[0.72rem] uppercase tracking-wider text-mute">{value}</span>;
+  return <span className="font-mono text-[0.75rem] uppercase tracking-wider text-paper-dim">{value}</span>;
 }
 
 /* ── Final call to action ────────────────────────────────────────────────── */
@@ -350,8 +333,8 @@ function FinalCta() {
       </span>
       <div className="mx-auto max-w-[1240px] px-4 py-28 sm:px-6 md:py-44 lg:px-10">
         <Reveal>
-          <p className="mb-8 flex items-center gap-3 font-mono text-[0.7rem] uppercase tracking-[0.22em] text-mute">
-            <span className="inline-block h-px w-8 bg-mute" />
+          <p className="mb-8 flex items-center gap-3 font-mono text-[0.75rem] uppercase tracking-[0.22em] text-mute">
+            <span aria-hidden className="inline-block h-px w-8 bg-mute" />
             Get started
           </p>
           <h2 className="max-w-4xl font-display text-[clamp(2.4rem,6vw,5rem)] font-medium leading-[1] tracking-[-0.045em]">
