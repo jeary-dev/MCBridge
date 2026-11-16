@@ -17,7 +17,7 @@ import java.util.UUID;
  */
 public final class Envelope {
     public static final int VERSION = 1;
-    public static final int MAX_FRAME_BYTES = 64 * 1024;
+    public static final int MAX_FRAME_BYTES = 256 * 1024;
     private static final Gson GSON = new Gson();
 
     private final String type;
@@ -62,7 +62,7 @@ public final class Envelope {
 
     public static Envelope parse(String text) throws ProtocolException {
         if (text.getBytes(StandardCharsets.UTF_8).length > MAX_FRAME_BYTES) {
-            throw new ProtocolException("message is larger than 64 KiB");
+            throw new ProtocolException("message is larger than 256 KiB");
         }
         JsonElement el;
         try {

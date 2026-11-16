@@ -15,12 +15,13 @@ Staff commands are hidden from members by default. Server admins can change who 
 | `/help` | | Lists every command. | |
 | `/status` | `server`, `live` | Live TPS, MSPT, memory, players, server icon and a graph of the last hour. `live:True` posts a message that updates itself every minute (needs Manage Server). | A linked server |
 | `/servers` | | Lists the Minecraft servers linked to this Discord, with players and TPS. | |
-| `/player` | `name`, `server` | Playtime, sessions, deaths, first joined, last seen and linked Discord account, tracked by MCBridge. | The player joined since MCBridge was added |
+| `/player` | `name`, `server` | An image card with the player's skin, health, hunger, XP level, world, game mode, ping, playtime, sessions, deaths, first joined and last seen. Staff get **Kick**, **Ban/Unban** and **Op/Deop** buttons under it. | Health and the rest need the server online and plugin 0.4.0+ (they also work for offline players). Buttons need Manage Server and `allow.moderation` |
 | `/stats` | `name`, `server` | Minecraft's own statistics: play time, mob and player kills, deaths, distance travelled, damage, fish caught and more. Blocks mined and advancements are shown while the player is online. | Server online, plugin 0.3.0+ |
-| `/inventory` | `player`, `server` | A player's armour, offhand, hotbar and backpack, with item counts, custom names and enchantments. | Server online, the player is online, plugin 0.3.0+ |
+| `/advancements` | `name`, `server` | An image card with progress for each advancement tab and the most recently completed advancements. Works for offline players. | Server online, plugin 0.4.0+ |
+| `/inventory` | `player`, `server` | An image of the player's inventory: armour, offhand, hotbar, backpack, item counts, enchantments and durability, plus what's in their hand. A menu under it opens any **shulker box** they carry and their **ender chest**. Works for offline players. | Server online, plugin 0.3.0+ (offline players, shulkers and ender chest need 0.4.0+) |
 | `/top` | `server` | The 10 most active players by playtime. | |
 | `/whitelist-request` | `player`, `server` | Ask the staff to whitelist your Minecraft account. Staff get Approve/Deny buttons and you get a DM with the answer. One pending request at a time, 30s cooldown. | A requests or alerts channel |
-| `/account link` | | Gives you a code. Type `/discord link <code>` in-game to link your Minecraft and Discord accounts. Codes expire after 10 minutes. | |
+| `/account link` | `code` | Without a code: gives you a code to type in-game with `/discord link <code>`. With a code: links the Minecraft account that was just stopped by a join requirement (the code is in the kick message). Codes expire after 10 minutes. | |
 | `/account unlink` | | Unlinks your Minecraft account and removes linked roles. | |
 
 ### Staff (Manage Server)
@@ -28,7 +29,7 @@ Staff commands are hidden from members by default. Server admins can change who 
 | Command | Options | What it does | Needs |
 |---|---|---|---|
 | `/setup` | `name` | Makes a one-time link code (10 minutes) for a new Minecraft server. | |
-| `/settings` | `server` | The setup wizard: channels (alerts, chat, feed, whitelist requests, console, stat channel), roles, daily recap, server address, live status, feed filters. | A linked server |
+| `/settings` | `server` | The setup wizard: channels (alerts, chat, feed, whitelist requests, console, stat channel), roles, daily recap, server address, live status, feed filters, join requirements, embed colour and footer. | A linked server |
 | `/lag` | `server` | What's using the server right now: loaded chunks, entities, the busiest chunks with coordinates, and the most common entities. 15s cooldown. | Server online |
 | `/recap` | `server` | Stats and a graph for the last 24 hours. | |
 | `/whitelist` | `action` (add/remove), `player`, `server` | Adds or removes a player from the whitelist. | `allow.whitelist` |
@@ -61,6 +62,26 @@ Staff commands are hidden from members by default. Server admins can change who 
 | Console | The live server console, in batches. Admins can type commands straight into it. IP addresses are hidden. Needs `allow.console`. |
 | Stat channel | A voice channel whose name shows the server status and player count, e.g. `🟢 12/50 online`. Updated about every 10 minutes (Discord's rename limit). |
 
+## Join requirements (set in `/settings` → Access & branding)
+
+| Setting | What happens |
+|---|---|
+| Anyone can join | Off. Nothing changes. |
+| Must link their Discord account | Players who haven't linked are kicked with a code. They run `/account link code:<code>` in Discord, then rejoin. |
+| Must link their Discord and have a role | Same, and they also need the role you pick. |
+
+- Operators can always join.
+- Players whose linked account has left the Discord are told to rejoin it.
+- If the bot can't be reached, `join-requirement.when-bot-offline` in the plugin config decides: `recent` (default) lets in
+  players who passed in the last 30 days, `allow` lets everyone in, `deny` keeps everyone out except operators.
+- The kick messages are in the plugin config under `messages.join-*`.
+- Needs plugin 0.4.0+.
+
+## Branding (set in `/settings` → Access & branding)
+
+Pick an embed colour (hex, e.g. `#3987E5`) and footer text. The colour is used for MCBridge's neutral messages (status
+cards keep green, yellow and red) and as the accent on the image cards. The footer replaces "MCBridge" in footers.
+
 ## Role sync
 
 Links permission groups to Discord roles for players who linked their account with `/account link`.
@@ -91,7 +112,8 @@ Links permission groups to Discord roles for players who linked their account wi
 | `allow.moderation` | `false` | `/mod` kick, ban, unban, op, deop, gamemode. |
 | `allow.roles` | `true` | Role sync can add and remove permission groups. |
 | `allow.console` | `false` | `/console` and the console channel. Gives full control of the server. |
-| `messages.*` | | Every message the plugin shows, in MiniMessage or `&` colour codes. |
+| `join-requirement.when-bot-offline` | `recent` | What to do with join requirements when the bot can't be reached: `recent`, `allow` or `deny`. |
+| `messages.*` | | Every message the plugin shows, in MiniMessage or `&` colour codes, including the join requirement kick messages. |
 
 ## Requirements
 

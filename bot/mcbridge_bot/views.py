@@ -1,12 +1,14 @@
 """Buttons, menus and pop-ups: the /settings wizard and the buttons that survive bot restarts."""
 from __future__ import annotations
 
+import asyncio
+import io
 import re
 from typing import TYPE_CHECKING
 
 import discord
 
-from . import embeds
+from . import embeds, images
 from .store import ServerRecord
 
 if TYPE_CHECKING:
@@ -21,6 +23,9 @@ CHANNEL_KINDS = {
 RECAP_HOURS = list(range(0, 24, 1))
 FEED_TYPES = {"join": "👋 Joins", "leave": "🚪 Leaves", "death": "💀 Deaths", "advancement": "🏆 Advancements"}
 PLAYER_NAME = re.compile(r"^[A-Za-z0-9_]{3,16}$")
+HEX_COLOR = re.compile(r"^#?[0-9a-fA-F]{6}$")
+JOIN_MODE_LABELS = {"off": "Anyone can join", "linked": "Must link their Discord account",
+                    "role": "Must link their Discord and have a role"}
 
 
 def can_manage(interaction: discord.Interaction) -> bool:
@@ -39,6 +44,24 @@ def settings_embed(bot: "MCBridgeBot", record: ServerRecord, page: str) -> disco
             if kind == "requests" and not cid:
                 value = "*uses the alerts channel*"
             e.add_field(name=f"{emoji} {label}", value=f"{value}\n-# {what}", inline=True)
+    elif page == "access":
+        mode = bot.join_mode(record.server_id)
+        role = store.get_setting(record.server_id, "join_role")
+        color = store.get_setting(record.server_id, "brand_color")
+        footer = store.get_setting(record.server_id, "brand_footer")
+        e.description = ("Who can join the Minecraft server, and how MCBridge's messages look.\n"
+                         "-# Join requirements need plugin 0.4.0 or newer. Operators can always join.")
+        e.add_field(name="🚪 Join requirement", value=JOIN_MODE_LABELS[mode])
+        e.add_field(name="🎫 Required role", value=(f"<@&{role}>" if role else "*not set*") +
+                    ("" if mode == "role" else "\n-# only used with *must have a role*"))
+        e.add_field(name="\u200b", value="\u200b")
+        e.add_field(name="🎨 Embed colour", value=f"`{color}`" if color else "*MCBridge blue*")
+        e.add_field(name="✏️ Footer", value=embeds.safe(footer) if footer else "*MCBridge*")
+        e.add_field(name="\u200b", value="\u200b")
+        if mode != "off":
+            e.add_field(name="How players join", inline=False,
+                        value="Unlinked players are kicked with a code. They run `/account link code:<code>` here, "
+                              "then rejoin.")
     elif page == "extras":
         console = store.get_channel(record.server_id, "console")
         stat = store.get_channel(record.server_id, "stat")
@@ -93,6 +116,20 @@ class SettingsView(discord.ui.View):
                 select.callback = self._channel_callback(kind, select)
                 self.add_item(select)
             self.add_item(self._button("More settings →", discord.ButtonStyle.primary, 4, self._go("more")))
+        elif self.page == "access":
+            mode = self.bot.join_mode(self.server_id)
+            join = discord.ui.Select(placeholder="🚪 Who can join", row=0, options=[
+                discord.SelectOption(label=label, value=key, default=key == mode)
+                for key, label in JOIN_MODE_LABELS.items()])
+            join.callback = self._join_callback(join)
+            self.add_item(join)
+            role = store.get_setting(self.server_id, "join_role")
+            join_role = discord.ui.RoleSelect(placeholder="🎫 Role players need to join", min_values=0, max_values=1,
+                                              row=1, default_values=[discord.Object(id=int(role))] if role else [])
+            join_role.callback = self._role_callback("join_role", join_role)
+            self.add_item(join_role)
+            self.add_item(self._button("Edit colour & footer", discord.ButtonStyle.secondary, 2, self._brand))
+            self.add_item(self._button("← More settings", discord.ButtonStyle.primary, 4, self._go("more")))
         elif self.page == "extras":
             console = store.get_channel(self.server_id, "console")
             select = discord.ui.ChannelSelect(
@@ -147,6 +184,7 @@ class SettingsView(discord.ui.View):
             self.add_item(self._button("Post live status here", discord.ButtonStyle.success, 3, self._live))
             self.add_item(self._button("← Channels", discord.ButtonStyle.primary, 4, self._go("channels")))
             self.add_item(self._button("Console, stats & feed →", discord.ButtonStyle.primary, 4, self._go("extras")))
+            self.add_item(self._button("Access & branding →", discord.ButtonStyle.primary, 4, self._go("access")))
 
     def _button(self, label, style, row, callback) -> discord.ui.Button:
         b = discord.ui.Button(label=label, style=style, row=row)
@@ -229,6 +267,25 @@ class SettingsView(discord.ui.View):
             self.bot.store.set_setting(self.server_id, "feed_off", ",".join(off) or None)
             await self.refresh(interaction)
         return callback
+
+    def _join_callback(self, select: discord.ui.Select):
+        async def callback(interaction: discord.Interaction):
+            mode = select.values[0]
+            self.bot.store.set_setting(self.server_id, "join_mode", None if mode == "off" else mode)
+            self.bot.store.audit(str(interaction.guild_id), self.server_id, str(interaction.user.id),
+                                 interaction.user.name, "settings", f"join requirement {mode}")
+            self.bot.refresh_features(self.server_id)
+            note = None
+            if mode == "role" and not self.bot.store.get_setting(self.server_id, "join_role"):
+                note = "Pick the role players need below. Until then, linking is enough."
+            session = self.bot.gateway.sessions.get(self.server_id)
+            if mode != "off" and session is not None and "join_gate" not in session.capabilities:
+                note = "The server's MCBridge plugin is too old for join requirements. Update it to 0.4.0 or newer."
+            await self.refresh(interaction, note)
+        return callback
+
+    async def _brand(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BrandModal(self))
 
     async def _filter(self, interaction: discord.Interaction):
         await interaction.response.send_modal(ChatFilterModal(self))
@@ -313,6 +370,31 @@ class ChatFilterModal(discord.ui.Modal, title="Chat filter"):
         await self.settings.refresh(interaction)
 
 
+class BrandModal(discord.ui.Modal, title="Colour & footer"):
+    color = discord.ui.TextInput(label="Embed colour (hex)", placeholder="#3987E5", required=False, max_length=7)
+    footer = discord.ui.TextInput(label="Footer text", placeholder="MCBridge", required=False, max_length=60)
+
+    def __init__(self, settings: SettingsView):
+        super().__init__()
+        self.settings = settings
+        store = settings.bot.store
+        self.color.default = store.get_setting(settings.server_id, "brand_color") or ""
+        self.footer.default = store.get_setting(settings.server_id, "brand_footer") or ""
+
+    async def on_submit(self, interaction: discord.Interaction):
+        color = self.color.value.strip()
+        if color and not HEX_COLOR.match(color):
+            await interaction.response.send_message("That isn't a hex colour. Use something like `#3987E5`.",
+                                                    ephemeral=True)
+            return
+        store = self.settings.bot.store
+        store.set_setting(self.settings.server_id, "brand_color", ("#" + color.lstrip("#").upper()) if color else None)
+        store.set_setting(self.settings.server_id, "brand_footer", self.footer.value.strip() or None)
+        store.audit(str(interaction.guild_id), self.settings.server_id, str(interaction.user.id),
+                    interaction.user.name, "settings", "branding")
+        await self.settings.refresh(interaction)
+
+
 class ConfigureButton(discord.ui.DynamicItem[discord.ui.Button], template=r"mcb:cfg:(?P<sid>srv_[0-9a-f]+)"):
     def __init__(self, server_id: str):
         super().__init__(discord.ui.Button(label="Open settings", emoji="⚙️", style=discord.ButtonStyle.primary,
@@ -367,3 +449,101 @@ def configure_button(server_id: str) -> discord.ui.View:
     view = discord.ui.View(timeout=None)
     view.add_item(ConfigureButton(server_id))
     return view
+
+
+PLAYER_ACTIONS = {
+    "kick": ("Kick", "👢", discord.ButtonStyle.secondary),
+    "ban": ("Ban", "🔨", discord.ButtonStyle.danger),
+    "unban": ("Unban", "🔓", discord.ButtonStyle.secondary),
+    "op": ("Op", "⭐", discord.ButtonStyle.secondary),
+    "deop": ("Deop", "⭐", discord.ButtonStyle.secondary),
+}
+
+
+class PlayerAction(discord.ui.DynamicItem[discord.ui.Button],
+                   template=r"mcb:pa:(?P<action>kick|ban|unban|op|deop):(?P<sid>srv_[0-9a-f]+):(?P<name>[A-Za-z0-9_]{3,16})"):
+    def __init__(self, action: str, server_id: str, player: str):
+        label, emoji, style = PLAYER_ACTIONS[action]
+        super().__init__(discord.ui.Button(label=label, emoji=emoji, style=style,
+                                           custom_id=f"mcb:pa:{action}:{server_id}:{player}"))
+        self.action, self.server_id, self.player = action, server_id, player
+
+    @classmethod
+    async def from_custom_id(cls, interaction, item, match):
+        return cls(match["action"], match["sid"], match["name"])
+
+    async def callback(self, interaction: discord.Interaction):
+        bot: MCBridgeBot = interaction.client
+        record = bot.store.get_server(self.server_id)
+        if record is None or record.guild_id != str(interaction.guild_id):
+            await interaction.response.send_message("This server isn't linked anymore.", ephemeral=True)
+            return
+        if not can_manage(interaction):
+            await interaction.response.send_message("You need **Manage Server** to moderate players.", ephemeral=True)
+            return
+        if self.action in ("kick", "ban"):
+            await interaction.response.send_modal(ReasonModal(record, self.action, self.player))
+            return
+        await bot.moderate(interaction, record, self.action, self.player)
+
+
+class ReasonModal(discord.ui.Modal):
+    reason = discord.ui.TextInput(label="Reason (optional)", required=False, max_length=200,
+                                  placeholder="Shown to the player")
+
+    def __init__(self, record: ServerRecord, action: str, player: str):
+        super().__init__(title=f"{action.title()} {player}")
+        self.record, self.action, self.player = record, action, player
+
+    async def on_submit(self, interaction: discord.Interaction):
+        bot: MCBridgeBot = interaction.client
+        await bot.moderate(interaction, self.record, self.action, self.player, self.reason.value.strip() or None)
+
+
+def player_actions(server_id: str, player: str, live: dict | None) -> discord.ui.View:
+    view = discord.ui.View(timeout=None)
+    live = live or {}
+    if live.get("online"):
+        view.add_item(PlayerAction("kick", server_id, player))
+    view.add_item(PlayerAction("unban" if live.get("banned") else "ban", server_id, player))
+    view.add_item(PlayerAction("deop" if live.get("op") else "op", server_id, player))
+    return view
+
+
+class ContainerView(discord.ui.View):
+    def __init__(self, server_name: str, data: dict, accent: str):
+        super().__init__(timeout=900)
+        self.server_name, self.data, self.accent = server_name, data, accent
+        self.options: dict[str, tuple[str, list, str, str | None]] = {}
+        shulkers = images.shulker_slots(data)
+        for n, (section, index, item) in enumerate(shulkers[:24], 1):
+            where = {"hotbar": f"hotbar slot {index + 1}", "main": f"backpack slot {index + 1}",
+                     "offhand": "offhand"}[section]
+            title = images.item_name(item)
+            self.options[f"s{n}"] = (f"#{n} {title}", item.get("contents") or [], where,
+                                     images.shulker_color(item.get("type", "")))
+        if data.get("ender_chest") is not None:
+            self.options["ender"] = ("Ender chest", data["ender_chest"], "Ender chest", "#2e8a7a")
+        select = discord.ui.Select(placeholder="📦 Look inside a shulker box or the ender chest", options=[
+            discord.SelectOption(label=label[:100], value=key, description=where[:100])
+            for key, (label, _, where, _) in self.options.items()])
+        select.callback = self._open(select)
+        self.add_item(select)
+
+    @property
+    def empty(self) -> bool:
+        return not self.options
+
+    def _open(self, select: discord.ui.Select):
+        async def callback(interaction: discord.Interaction):
+            label, items, where, color = self.options[select.values[0]]
+            title = label.split(" ", 1)[1] if label.startswith("#") else label
+            sub = f"{self.data.get('name', '?')} · {where}" if where != title else self.data.get("name", "?")
+            png = await asyncio.to_thread(images.container_card, title, list(items), subtitle=sub, color=color,
+                                          accent=self.accent)
+            e = discord.Embed(color=int(self.accent.lstrip("#"), 16))
+            e.set_author(name=self.server_name)
+            e.set_image(url="attachment://container.png")
+            await interaction.response.send_message(embed=e, file=discord.File(io.BytesIO(png), "container.png"),
+                                                    ephemeral=True)
+        return callback

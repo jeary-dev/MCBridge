@@ -15,11 +15,12 @@ import logging
 import time
 from collections import defaultdict, deque
 
+import aiohttp
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from . import charts, embeds, sync, views
+from . import charts, embeds, images, sync, views
 from .alerts import Alert, AlertTracker
 from .config import Settings
 from .gateway import CommandFailed, Gateway, Session
@@ -39,6 +40,10 @@ CONSOLE_FLUSH_S = 2
 MAX_BUFFERED_CONSOLE_LINES = 2000
 STAT_RENAME_GAP_S = 330
 DEMO_EVENTS = 30
+SKIN_TTL_S = 1800
+SKIN_CACHE_SIZE = 256
+SKIN_URLS = {"body": "https://mc-heads.net/body/{uuid}/240", "avatar": "https://mc-heads.net/avatar/{uuid}/64"}
+JOIN_MODES = ("off", "linked", "role")
 SYSTEM_ACTOR = Actor(discord_id="0", name="MCBridge")
 
 
@@ -76,6 +81,8 @@ class MCBridgeBot(commands.Bot):
         self._console: dict[str, list[str]] = defaultdict(list)
         self._stat_renamed: dict[str, float] = {}
         self.demo_events: deque[dict] = deque(maxlen=DEMO_EVENTS)
+        self._skins: dict[tuple[str, str], tuple[float, bytes | None]] = {}
+        self._web: aiohttp.ClientSession | None = None
         gateway.on(self._on_gateway)
         gateway.demo_provider = self.demo_snapshot
         gateway.health_check = self.health_problem
@@ -83,7 +90,7 @@ class MCBridgeBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         from .commands import MCBridgeCommands
-        self.add_dynamic_items(views.ConfigureButton, views.WhitelistDecision)
+        self.add_dynamic_items(views.ConfigureButton, views.WhitelistDecision, views.PlayerAction)
         await self.add_cog(MCBridgeCommands(self))
         if self.settings.dev_guild_id:
             guild = discord.Object(id=self.settings.dev_guild_id)
@@ -103,6 +110,55 @@ class MCBridgeBot(commands.Bot):
         log.info("logged in as %s, in %d Discord servers", self.user, len(self.guilds))
         self._presence = None
         await self.update_presence()
+
+    async def close(self) -> None:
+        if self._web is not None:
+            await self._web.close()
+        await super().close()
+
+    async def skin(self, uuid: str, kind: str = "body") -> bytes | None:
+        key = (kind, uuid)
+        cached = self._skins.get(key)
+        if cached and time.monotonic() - cached[0] < SKIN_TTL_S:
+            return cached[1]
+        data = None
+        try:
+            if self._web is None or self._web.closed:
+                self._web = aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=4),
+                                                  headers={"User-Agent": "MCBridge (+https://mcbridge.dev)"})
+            async with self._web.get(SKIN_URLS[kind].format(uuid=uuid.replace("-", ""))) as resp:
+                if resp.status == 200:
+                    body = await resp.read()
+                    if body[:8] == b"\x89PNG\r\n\x1a\n" and len(body) < 2_000_000:
+                        data = body
+        except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+            log.debug("skin fetch failed for %s: %s", uuid, e)
+        if len(self._skins) >= SKIN_CACHE_SIZE:
+            self._skins.pop(next(iter(self._skins)))
+        self._skins[key] = (time.monotonic(), data)
+        return data
+
+    def brand_color(self, server_id: str) -> int:
+        value = self.store.get_setting(server_id, "brand_color")
+        try:
+            return int(value.lstrip("#"), 16) if value else embeds.BLUE
+        except ValueError:
+            return embeds.BLUE
+
+    def accent(self, server_id: str) -> str:
+        return "#%06x" % self.brand_color(server_id)
+
+    def brand(self, e: discord.Embed, server_id: str) -> discord.Embed:
+        if e.color is not None and e.color.value == embeds.BLUE:
+            e.color = self.brand_color(server_id)
+        footer = self.store.get_setting(server_id, "brand_footer")
+        if footer:
+            current = e.footer.text if e.footer else None
+            if not current:
+                e.set_footer(text=footer)
+            elif current.startswith("MCBridge"):
+                e.set_footer(text=footer + current[len("MCBridge"):], icon_url=e.footer.icon_url)
+        return e
 
     def health_problem(self) -> str | None:
         if self.is_closed():
@@ -198,7 +254,7 @@ class MCBridgeBot(commands.Bot):
             has_icon=bool(icon),
             has_chart=bool(samples),
             last_seen=samples[-1]["ts"] if samples else None)
-        return embed, files
+        return self.brand(embed, record.server_id), files
 
     async def _on_gateway(self, session: Session, what: str, details: dict) -> None:
         record = self.store.get_server(session.server_id) or session.record
@@ -251,6 +307,8 @@ class MCBridgeBot(commands.Bot):
             self.spawn(self.sync_roles(session, record, details))
         elif what == "event.link_request":
             self.spawn(self.handle_link_request(session, record, details))
+        elif what == "event.access_request":
+            self.spawn(self.handle_access_request(session, record, details))
         if alert is not None:
             self.spawn(self.send_alert(record, alert, session))
 
@@ -265,13 +323,20 @@ class MCBridgeBot(commands.Bot):
         text = message.lower()
         return any(w.strip().lower() in text for w in words.splitlines() if w.strip())
 
+    def join_mode(self, server_id: str) -> str:
+        mode = self.store.get_setting(server_id, "join_mode") or "off"
+        return mode if mode in JOIN_MODES else "off"
+
     async def push_features(self, session: Session) -> None:
-        if "console_stream" not in session.capabilities:
+        caps = session.capabilities
+        if "console_stream" not in caps and "join_gate" not in caps:
             return
-        enabled = bool(self.store.get_channel(session.server_id, "console"))
+        data = {"console_stream": "console_stream" in caps and bool(self.store.get_channel(session.server_id, "console"))}
+        if "join_gate" in caps:
+            data["join_requirement"] = self.join_mode(session.server_id)
         try:
-            await session.command(Envelope(type="cmd.set_features", data={"console_stream": enabled}))
-        except CommandFailed:
+            await session.command(Envelope(type="cmd.set_features", data=data))
+        except (CommandFailed, ConnectionError):
             pass
 
     def refresh_features(self, server_id: str) -> None:
@@ -554,7 +619,7 @@ class MCBridgeBot(commands.Bot):
         if r["samples"]:
             png = charts.activity_chart(charts.bucket(r["samples"], 900), since, until, step=900)
             files.append(file_of(png, embeds.CHART_FILE))
-        return embeds.recap_embed(record.name, r, has_chart=bool(files)), files
+        return self.brand(embeds.recap_embed(record.name, r, has_chart=bool(files)), record.server_id), files
 
     @tasks.loop(minutes=5)
     async def recap_loop(self) -> None:
@@ -608,10 +673,7 @@ class MCBridgeBot(commands.Bot):
             try:
                 member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
                 name = member.display_name
-                role_id = self.store.get_setting(record.server_id, "link_role")
-                role = guild.get_role(int(role_id)) if role_id else None
-                if role is not None:
-                    await member.add_roles(role, reason=f"Linked Minecraft account {player['name']}")
+                await self.give_link_role(guild, member, record, player["name"])
             except discord.HTTPException as e:
                 log.warning("couldn't give link role in %s: %s", record.guild_id, e)
         self.store.audit(record.guild_id, record.server_id, discord_id, name, "account_link", player["name"], "ok")
@@ -622,6 +684,83 @@ class MCBridgeBot(commands.Bot):
                             f"**{embeds.safe(record.name)}**.")
         except Exception:
             pass
+
+    async def access_decision(self, record: ServerRecord, player: dict) -> dict:
+        mode = self.join_mode(record.server_id)
+        if mode == "off":
+            return {"allowed": True}
+        discord_id = self.store.linked_discord(record.guild_id, player["uuid"])
+        if discord_id is None:
+            code = self.store.create_join_code(record.guild_id, record.server_id, player["uuid"], player["name"])
+            return {"allowed": False, "reason": "not_linked", "code": code}
+        guild = self.get_guild(int(record.guild_id))
+        if guild is None:
+            return {"allowed": False, "reason": "error"}
+        try:
+            member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+        except discord.NotFound:
+            return {"allowed": False, "reason": "not_in_discord", "discord": guild.name[:100]}
+        except discord.HTTPException:
+            return {"allowed": False, "reason": "error"}
+        if mode == "role":
+            role_id = self.store.get_setting(record.server_id, "join_role")
+            role = guild.get_role(int(role_id)) if role_id else None
+            if role is not None and role not in member.roles:
+                return {"allowed": False, "reason": "missing_role", "role": role.name[:100]}
+        return {"allowed": True}
+
+    async def handle_access_request(self, session: Session, record: ServerRecord, data: dict) -> None:
+        try:
+            result = await asyncio.wait_for(self.access_decision(record, data["player"]), 4)
+        except asyncio.TimeoutError:
+            result = {"allowed": False, "reason": "error"}
+        if not result["allowed"]:
+            self.store.audit(record.guild_id, record.server_id, "0", data["player"]["name"], "join_blocked",
+                             data["player"]["name"], result["reason"])
+        try:
+            await session.command(Envelope(type="cmd.access_result",
+                                           data={"request_id": data["request_id"], **result}), timeout=5)
+        except (CommandFailed, ConnectionError):
+            pass
+
+    async def give_link_role(self, guild: discord.Guild, member: discord.Member, record: ServerRecord,
+                             player_name: str) -> None:
+        role_id = self.store.get_setting(record.server_id, "link_role")
+        role = guild.get_role(int(role_id)) if role_id else None
+        if role is not None and role not in member.roles:
+            try:
+                await member.add_roles(role, reason=f"Linked Minecraft account {player_name}")
+            except discord.HTTPException as e:
+                log.warning("couldn't give link role in %s: %s", record.guild_id, e)
+
+    async def moderate(self, interaction: discord.Interaction, record: ServerRecord, action: str, player: str,
+                       reason: str | None = None, gamemode: str | None = None) -> None:
+        session = self.gateway.sessions.get(record.server_id)
+        if not interaction.response.is_done():
+            await interaction.response.defer(ephemeral=True)
+        if session is None:
+            await interaction.followup.send(f"❌ **{embeds.safe(record.name)}** is offline right now.", ephemeral=True)
+            return
+        if "moderation" not in session.capabilities:
+            await interaction.followup.send(f"❌ **{embeds.safe(record.name)}** doesn't allow moderation. Set "
+                                            "`allow.moderation: true` in `plugins/MCBridge/config.yml`.",
+                                            ephemeral=True)
+            return
+        fields = {"action": action, "player_name": player}
+        if reason:
+            fields["reason"] = reason.replace("\n", " ")[:200]
+        if gamemode:
+            fields["gamemode"] = gamemode
+        detail = f"{player}" + (f" ({gamemode})" if gamemode else "") + (f": {fields['reason']}" if reason else "")
+        try:
+            reply = await session.command(command("cmd.moderate", actor_of(interaction.user), **fields))
+            self.store.audit(record.guild_id, record.server_id, str(interaction.user.id), interaction.user.name,
+                             f"mod_{action}", detail, "ok")
+            await interaction.followup.send(f"✅ {embeds.safe(reply.get('result') or 'Done')}", ephemeral=True)
+        except CommandFailed as e:
+            self.store.audit(record.guild_id, record.server_id, str(interaction.user.id), interaction.user.name,
+                             f"mod_{action}", detail, e.code)
+            await interaction.followup.send(f"❌ {embeds.safe(e.message)}", ephemeral=True)
 
     async def _link_result(self, session: Session, uuid: str, ok: bool, message: str) -> None:
         if "link" not in session.capabilities:

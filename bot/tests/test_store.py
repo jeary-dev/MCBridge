@@ -193,3 +193,20 @@ def test_whitelist_requests(store):
     assert not store.decide_whitelist_request(rid, "denied", "mod2")
     assert store.whitelist_request(rid)["status"] == "approved"
     assert store.pending_whitelist_request(rec.server_id, "d1") is None
+
+
+def test_join_codes(store, monkeypatch):
+    rec, _ = store.create_server("g1", "SMP")
+    code = store.create_join_code("g1", rec.server_id, "uuid-1", "czrbyn")
+    assert len(code) == 6
+    assert store.redeem_join_code("g2", code, "d1") is None
+    linked = store.redeem_join_code("g1", code.lower(), "d1")
+    assert linked == {"uuid": "uuid-1", "name": "czrbyn", "server_id": rec.server_id}
+    assert store.linked_discord("g1", "uuid-1") == "d1"
+    assert store.redeem_join_code("g1", code, "d1") is None
+    old = store.create_join_code("g1", rec.server_id, "uuid-2", "other")
+    new = store.create_join_code("g1", rec.server_id, "uuid-2", "other")
+    assert store.redeem_join_code("g1", old, "d2") is None or old == new
+    real = time.time
+    monkeypatch.setattr(time, "time", lambda: real() + 3600)
+    assert store.redeem_join_code("g1", new, "d2") is None

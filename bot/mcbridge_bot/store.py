@@ -112,6 +112,15 @@ CREATE TABLE IF NOT EXISTS account_codes (
     expires_at  INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS join_codes (
+    code_hash   TEXT PRIMARY KEY,
+    guild_id    TEXT NOT NULL,
+    server_id   TEXT NOT NULL,
+    uuid        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    expires_at  INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS whitelist_requests (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     server_id   TEXT NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
@@ -277,6 +286,7 @@ class Store:
         self.db.execute("DELETE FROM link_codes WHERE guild_id = ?", (guild_id,))
         self.db.execute("DELETE FROM account_links WHERE guild_id = ?", (guild_id,))
         self.db.execute("DELETE FROM account_codes WHERE guild_id = ?", (guild_id,))
+        self.db.execute("DELETE FROM join_codes WHERE guild_id = ?", (guild_id,))
         self.db.commit()
         return ids
 
@@ -300,6 +310,7 @@ class Store:
         self.db.execute("DELETE FROM samples WHERE ts < ?", (older_than,))
         self.db.execute("DELETE FROM session_log WHERE ended_at < ?", (older_than,))
         self.db.execute("DELETE FROM account_codes WHERE expires_at < ?", (int(time.time()),))
+        self.db.execute("DELETE FROM join_codes WHERE expires_at < ?", (int(time.time()),))
         self.db.commit()
 
     def player_joined(self, server_id: str, uuid: str, name: str, ts: int) -> None:
@@ -421,12 +432,35 @@ class Store:
         if row is None:
             return None
         self.db.execute("DELETE FROM account_codes WHERE code_hash = ?", (key,))
-        self.db.execute("DELETE FROM account_links WHERE guild_id = ? AND (discord_id = ? OR uuid = ?)",
-                        (guild_id, row["discord_id"], uuid))
-        self.db.execute("INSERT INTO account_links (guild_id, discord_id, uuid, name, linked_at) VALUES (?,?,?,?,?)",
-                        (guild_id, row["discord_id"], uuid, name, int(time.time())))
-        self.db.commit()
+        self.link_account(guild_id, row["discord_id"], uuid, name)
         return row["discord_id"]
+
+    def link_account(self, guild_id: str, discord_id: str, uuid: str, name: str) -> None:
+        self.db.execute("DELETE FROM account_links WHERE guild_id = ? AND (discord_id = ? OR uuid = ?)",
+                        (guild_id, discord_id, uuid))
+        self.db.execute("INSERT INTO account_links (guild_id, discord_id, uuid, name, linked_at) VALUES (?,?,?,?,?)",
+                        (guild_id, discord_id, uuid, name, int(time.time())))
+        self.db.commit()
+
+    def create_join_code(self, guild_id: str, server_id: str, uuid: str, name: str) -> str:
+        raw = "".join(secrets.choice(LINK_CODE_ALPHABET) for _ in range(6))
+        self.db.execute("DELETE FROM join_codes WHERE guild_id = ? AND uuid = ?", (guild_id, uuid))
+        self.db.execute("INSERT INTO join_codes (code_hash, guild_id, server_id, uuid, name, expires_at) "
+                        "VALUES (?,?,?,?,?,?)",
+                        (_hash("join:" + guild_id + ":" + raw), guild_id, server_id, uuid, name,
+                         int(time.time()) + LINK_CODE_TTL_S))
+        self.db.commit()
+        return raw
+
+    def redeem_join_code(self, guild_id: str, code: str, discord_id: str) -> dict | None:
+        key = _hash("join:" + guild_id + ":" + normalize_code(code))
+        row = self.db.execute("SELECT * FROM join_codes WHERE code_hash = ? AND expires_at >= ?",
+                              (key, int(time.time()))).fetchone()
+        if row is None:
+            return None
+        self.db.execute("DELETE FROM join_codes WHERE code_hash = ?", (key,))
+        self.link_account(guild_id, discord_id, row["uuid"], row["name"])
+        return {"uuid": row["uuid"], "name": row["name"], "server_id": row["server_id"]}
 
     def linked_account(self, guild_id: str, discord_id: str) -> dict | None:
         row = self.db.execute("SELECT * FROM account_links WHERE guild_id = ? AND discord_id = ?",

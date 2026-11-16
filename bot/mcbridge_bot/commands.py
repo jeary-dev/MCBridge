@@ -1,6 +1,8 @@
 """Every slash command. Staff commands are hidden from members by default and checked again when run."""
 from __future__ import annotations
 
+import asyncio
+import io
 import time
 from typing import TYPE_CHECKING, Literal
 
@@ -8,7 +10,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-from . import embeds, views
+from . import embeds, images, views
 from .discord_bot import UserError, actor_of
 from .gateway import CommandFailed, Session
 from .protocol import command
@@ -49,7 +51,7 @@ class MCBridgeCommands(commands.Cog):
         if session is None:
             raise UserError(f"**{embeds.safe(record.name)}** is offline right now.")
         if capability and capability not in session.capabilities:
-            if capability in ("diagnostics", "link", "stats", "inventory", "message"):
+            if capability in ("diagnostics", "link", "stats", "inventory", "message", "player_info", "advancements"):
                 raise UserError(f"**{embeds.safe(record.name)}** needs a newer MCBridge plugin for that. "
                                 "Ask the server owner to update it.")
             raise UserError(f"**{embeds.safe(record.name)}** doesn't allow `{capability}`. The server owner can "
@@ -80,13 +82,15 @@ class MCBridgeCommands(commands.Cog):
         e = discord.Embed(title="MCBridge", color=embeds.BLUE, url="https://mcbridge.dev",
                           description="Your Minecraft server, live in Discord.")
         e.add_field(name="Everyone", inline=False,
-                    value="`/status` live stats and graph\n`/player` playtime and last seen\n"
-                          "`/stats` Minecraft statistics\n`/inventory` what a player is carrying\n"
+                    value="`/status` live stats and graph\n`/player` health, XP, playtime and more\n"
+                          "`/stats` Minecraft statistics\n`/advancements` advancement progress\n"
+                          "`/inventory` inventory, shulkers and ender chest\n"
                           "`/top` most active players\n`/whitelist-request` ask to join\n"
                           "`/account link` link your Minecraft account")
         e.add_field(name="Staff", inline=False,
                     value="`/setup` link a server\n`/settings` channels, roles, recap, live status\n"
                           "`/lag` what's causing lag right now\n`/recap` the last 24 hours\n"
+                          "`/settings` → Access & branding: join requirements, colour, footer\n"
                           "`/mod` kick, ban, unban, op, deop, gamemode\n`/msg` message a player\n"
                           "`/whitelist` add or remove players\n`/rolesync` link groups to roles\n"
                           "`/console` run a console command\n`/audit` who did what\n`/unlink` disconnect a server")
@@ -173,18 +177,76 @@ class MCBridgeCommands(commands.Cog):
         await interaction.followup.send("✅ Live status posted. It updates every minute; delete it to stop.",
                                         ephemeral=True)
 
+    def card(self, record: ServerRecord, png: bytes, filename: str, description: str | None = None):
+        e = discord.Embed(color=embeds.BLUE, description=description)
+        e.set_image(url=f"attachment://{filename}")
+        self.bot.brand(e, record.server_id)
+        return e, discord.File(io.BytesIO(png), filename=filename)
+
+    async def live_command(self, record: ServerRecord, cmd_type: str, capability: str, user, player: str,
+                           *, required: bool) -> dict | None:
+        session = self.bot.gateway.sessions.get(record.server_id)
+        if session is None or capability not in session.capabilities:
+            if required:
+                self.session(record, capability)
+            return None
+        try:
+            reply = await session.command(command(cmd_type, actor_of(user), player_name=player), timeout=8)
+        except CommandFailed as e:
+            if required or e.code == "PLAYER_NOT_FOUND":
+                raise UserError(e.message)
+            return None
+        return reply.get("data") or {}
+
     @app_commands.guild_only()
-    @app_commands.command(name="player", description="Playtime, sessions, deaths and last seen for a player")
+    @app_commands.command(name="player", description="Health, XP, world, playtime and more for a player")
     @app_commands.autocomplete(name=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.cooldown(1, 5)
     async def player(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 16],
                      server: str | None = None):
         record = self.resolve(interaction, server)
-        p = self.store.player(record.server_id, name)
-        if p is None:
-            raise UserError(f"**{embeds.safe(name)}** hasn't played on **{embeds.safe(record.name)}** "
-                            "since MCBridge was added.")
-        discord_id = self.store.linked_discord(record.guild_id, p["uuid"])
-        await interaction.response.send_message(embed=embeds.player_embed(record.name, p, discord_id))
+        tracked = self.store.player(record.server_id, name)
+        await interaction.response.defer()
+        live = None
+        try:
+            live = await self.live_command(record, "cmd.player_info", "player_info", interaction.user, name,
+                                           required=False)
+        except UserError:
+            if tracked is None:
+                raise
+        if tracked is None and not live:
+            raise UserError(f"**{embeds.safe(name)}** hasn't played on **{embeds.safe(record.name)}**.")
+        source = live or tracked
+        uuid, pname = source["uuid"], source["name"]
+        discord_id = self.store.linked_discord(record.guild_id, uuid)
+        member = interaction.guild.get_member(int(discord_id)) if discord_id else None
+        skin = await self.bot.skin(uuid, "body")
+        png = await asyncio.to_thread(images.player_card, pname, server=record.name, tracked=tracked, live=live,
+                                      skin=skin, discord_name=member.display_name if member else None,
+                                      accent=self.bot.accent(record.server_id))
+        e, f = self.card(record, png, "player.png", f"Linked to <@{discord_id}>" if discord_id else None)
+        session = self.bot.gateway.sessions.get(record.server_id)
+        view = None
+        if live and session is not None and "moderation" in session.capabilities:
+            view = views.player_actions(record.server_id, pname, live)
+        await interaction.followup.send(embed=e, file=f, view=view or discord.utils.MISSING)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="advancements", description="A player's advancement progress and recent completions")
+    @app_commands.autocomplete(name=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.cooldown(1, 5)
+    async def advancements(self, interaction: discord.Interaction, name: app_commands.Range[str, 3, 16],
+                           server: str | None = None):
+        record = self.resolve(interaction, server)
+        self.session(record, "advancements")
+        await interaction.response.defer()
+        data = await self.live_command(record, "cmd.advancements", "advancements", interaction.user, name,
+                                       required=True)
+        avatar = await self.bot.skin(data["uuid"], "avatar") if data.get("uuid") else None
+        png = await asyncio.to_thread(images.advancements_card, data, server=record.name, avatar=avatar,
+                                      accent=self.bot.accent(record.server_id))
+        e, f = self.card(record, png, "advancements.png")
+        await interaction.followup.send(embed=e, file=f)
 
     @app_commands.guild_only()
     @app_commands.command(name="top", description="The most active players by playtime")
@@ -192,7 +254,8 @@ class MCBridgeCommands(commands.Cog):
     async def top(self, interaction: discord.Interaction, server: str | None = None):
         record = self.resolve(interaction, server)
         await interaction.response.send_message(
-            embed=embeds.top_embed(record.name, self.store.top_players(record.server_id, 10)))
+            embed=self.bot.brand(embeds.top_embed(record.name, self.store.top_players(record.server_id, 10)),
+                                 record.server_id))
 
     @app_commands.guild_only()
     @app_commands.command(name="lag", description="What's using the server right now: chunks, entities, hot spots")
@@ -208,8 +271,9 @@ class MCBridgeCommands(commands.Cog):
             reply = await session.command(command("cmd.diagnostics", actor_of(interaction.user)))
         except CommandFailed as e:
             raise UserError(e.message)
-        await interaction.followup.send(embed=embeds.diagnostics_embed(record.name, reply.get("data") or {}),
-                                        ephemeral=True)
+        await interaction.followup.send(
+            embed=self.bot.brand(embeds.diagnostics_embed(record.name, reply.get("data") or {}), record.server_id),
+            ephemeral=True)
 
     @app_commands.guild_only()
     @app_commands.command(name="recap", description="Stats and a graph for the last 24 hours")
@@ -247,11 +311,30 @@ class MCBridgeCommands(commands.Cog):
         await interaction.response.send_message(
             f"📝 Request sent for **{embeds.safe(player)}**. I'll DM you when the staff decide.", ephemeral=True)
 
-    @account.command(name="link", description="Get a code to link your Minecraft account")
-    @app_commands.checks.cooldown(1, 20)
-    async def account_link(self, interaction: discord.Interaction):
-        if not self.store.servers_for_guild(str(interaction.guild_id)):
+    @account.command(name="link", description="Link your Minecraft account")
+    @app_commands.describe(code="The code from the message you got when the server didn't let you in")
+    @app_commands.checks.cooldown(1, 10)
+    async def account_link(self, interaction: discord.Interaction, code: app_commands.Range[str, 4, 12] | None = None):
+        guild_id = str(interaction.guild_id)
+        if not self.store.servers_for_guild(guild_id):
             raise UserError("No Minecraft server is linked to this Discord yet.")
+        if code:
+            linked = self.store.redeem_join_code(guild_id, code, str(interaction.user.id))
+            if linked is None:
+                raise UserError("That code is wrong or expired. Join the server again to get a new one.")
+            record = self.store.get_server(linked["server_id"])
+            note = ""
+            if record is not None:
+                await self.bot.give_link_role(interaction.guild, interaction.user, record, linked["name"])
+                self.audit(interaction, record.server_id, "account_link", linked["name"], "ok (join code)")
+                if self.bot.join_mode(record.server_id) == "role":
+                    role_id = self.store.get_setting(record.server_id, "join_role")
+                    role = interaction.guild.get_role(int(role_id)) if role_id else None
+                    if role is not None and role not in interaction.user.roles:
+                        note = f"\nYou also need the {role.mention} role before you can join."
+            await interaction.response.send_message(
+                f"✅ Linked to **{embeds.safe(linked['name'])}**. You can join the server now!{note}", ephemeral=True)
+            return
         code = self.store.create_account_code(str(interaction.guild_id), str(interaction.user.id))
         current = self.store.linked_account(str(interaction.guild_id), str(interaction.user.id))
         e = discord.Embed(title="🔗 Link your Minecraft account", color=embeds.BLUE,
@@ -383,21 +466,8 @@ class MCBridgeCommands(commands.Cog):
         record = self.resolve(interaction, server)
         if not views.PLAYER_NAME.match(player):
             raise UserError("That isn't a valid Minecraft username.")
-        session = self.session(record, "moderation")
-        await interaction.response.defer(ephemeral=True)
-        fields = {"action": action, "player_name": player}
-        if reason:
-            fields["reason"] = reason.replace("\n", " ")[:200]
-        if gamemode:
-            fields["gamemode"] = gamemode
-        detail = f"{player}" + (f" ({gamemode})" if gamemode else "") + (f": {fields['reason']}" if reason else "")
-        try:
-            reply = await session.command(command("cmd.moderate", actor_of(interaction.user), **fields))
-            self.audit(interaction, record.server_id, f"mod_{action}", detail, "ok")
-            await interaction.followup.send(f"✅ {embeds.safe(reply.get('result') or 'Done')}", ephemeral=True)
-        except CommandFailed as e:
-            self.audit(interaction, record.server_id, f"mod_{action}", detail, e.code)
-            await interaction.followup.send(f"❌ {embeds.safe(e.message)}", ephemeral=True)
+        self.session(record, "moderation")
+        await self.bot.moderate(interaction, record, action, player, reason, gamemode)
 
     @mod.command(name="kick", description="Kick an online player")
     @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
@@ -475,10 +545,11 @@ class MCBridgeCommands(commands.Cog):
             reply = await session.command(command("cmd.player_stats", actor_of(interaction.user), player_name=name))
         except CommandFailed as e:
             raise UserError(e.message)
-        await interaction.followup.send(embed=embeds.stats_embed(record.name, reply.get("data") or {}))
+        await interaction.followup.send(embed=self.bot.brand(embeds.stats_embed(record.name, reply.get("data") or {}),
+                                                             record.server_id))
 
     @app_commands.guild_only()
-    @app_commands.command(name="inventory", description="What an online player is carrying")
+    @app_commands.command(name="inventory", description="A player's inventory, shulker boxes and ender chest")
     @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
     @app_commands.checks.cooldown(1, 5)
     async def inventory(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
@@ -490,7 +561,13 @@ class MCBridgeCommands(commands.Cog):
             reply = await session.command(command("cmd.inventory", actor_of(interaction.user), player_name=player))
         except CommandFailed as e:
             raise UserError(e.message)
-        await interaction.followup.send(embed=embeds.inventory_embed(record.name, reply.get("data") or {}))
+        data = reply.get("data") or {}
+        skin = await self.bot.skin(data["uuid"], "body") if data.get("uuid") else None
+        accent = self.bot.accent(record.server_id)
+        png = await asyncio.to_thread(images.inventory_card, data, server=record.name, skin=skin, accent=accent)
+        e, f = self.card(record, png, "inventory.png")
+        view = views.ContainerView(record.name, data, accent)
+        await interaction.followup.send(embed=e, file=f, view=discord.utils.MISSING if view.empty else view)
 
     @rolesync.command(name="add", description="Link a permission group (LuckPerms or Vault) to a Discord role")
     @app_commands.describe(group="The permission group name, e.g. vip", role="The Discord role",
@@ -537,7 +614,8 @@ class MCBridgeCommands(commands.Cog):
     async def rolesync_list(self, interaction: discord.Interaction, server: str | None = None):
         record = self.resolve(interaction, server)
         await interaction.response.send_message(
-            embed=embeds.rolesync_embed(record.name, self.store.role_links(record.server_id)), ephemeral=True)
+            embed=self.bot.brand(embeds.rolesync_embed(record.name, self.store.role_links(record.server_id)),
+                                 record.server_id), ephemeral=True)
 
 
 class ConfirmUnlink(discord.ui.View):

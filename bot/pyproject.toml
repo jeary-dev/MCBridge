@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mcbridge-bot"
-version = "0.3.0"
+version = "0.4.0"
 description = "MCBridge: the Discord bot and WebSocket gateway that Minecraft servers connect to."
 requires-python = ">=3.10"
 dependencies = ["aiohttp>=3.9", "discord.py>=2.4", "Pillow>=10.1"]
@@ -14,6 +14,9 @@ dev = ["pytest>=8"]
 
 [tool.setuptools]
 packages = ["mcbridge_bot"]
+
+[tool.setuptools.package-data]
+mcbridge_bot = ["fonts/*.otf", "fonts/*.txt"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

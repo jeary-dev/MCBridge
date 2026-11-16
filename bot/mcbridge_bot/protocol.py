@@ -13,7 +13,7 @@ from enum import Enum
 from typing import Any, Callable
 
 PROTOCOL_VERSION = 1
-MAX_FRAME_BYTES = 64 * 1024
+MAX_FRAME_BYTES = 256 * 1024
 MAX_CHAT_LEN = 256
 MAX_CONSOLE_LEN = 1000
 MAX_ICON_CHARS = 24 * 1024
@@ -160,11 +160,30 @@ VALIDATORS: dict[str, Callable[[dict], None]] = {
                               _require_text(d, "message", MAX_CHAT_LEN)),
     "cmd.set_groups": lambda d: (_require(d, "player_uuid", str), _v_string_list(d, "add", 50),
                                  _v_string_list(d, "remove", 50)),
-    "cmd.set_features": lambda d: _require(d, "console_stream", bool),
+    "cmd.player_info": lambda d: (Actor.from_dict(_require(d, "actor", dict)), _require_text(d, "player_name", 16)),
+    "cmd.advancements": lambda d: (Actor.from_dict(_require(d, "actor", dict)), _require_text(d, "player_name", 16)),
+    "cmd.set_features": lambda d: (_require(d, "console_stream", bool),
+                                   _optional_choice(d, "join_requirement", JOIN_MODES)),
+    "event.access_request": lambda d: (_v_player_only(d), _require_text(d, "request_id", 64)),
+    "cmd.access_result": lambda d: _v_access_result(d),
     "cmd.link_result": lambda d: (_require(d, "player_uuid", str), _require(d, "ok", bool),
                                   _require_text(d, "message", 256)),
     "reply": lambda d: _v_reply(d),
 }
+
+
+JOIN_MODES = {"off", "linked", "role"}
+ACCESS_REASONS = {"not_linked", "missing_role", "not_in_discord", "error"}
+
+
+def _v_access_result(d):
+    _require_text(d, "request_id", 64)
+    allowed = _require(d, "allowed", bool)
+    if not allowed:
+        _require_choice(d, "reason", ACCESS_REASONS)
+    for key in ("code", "role", "discord"):
+        if key in d and d[key] is not None:
+            _v_max_len(d, key, 100)
 
 
 MODERATION_ACTIONS = {"kick", "ban", "unban", "op", "deop", "gamemode"}
@@ -251,13 +270,13 @@ class Envelope:
         text = json.dumps({"v": self.v, "type": self.type, "id": self.id, "ts": self.ts,
                            "reply_to": self.reply_to, "data": self.data}, separators=(",", ":"))
         if len(text.encode()) > MAX_FRAME_BYTES:
-            raise ProtocolError("message is larger than 64 KiB")
+            raise ProtocolError("message is larger than 256 KiB")
         return text
 
     @classmethod
     def from_json(cls, text: str) -> "Envelope":
         if len(text.encode()) > MAX_FRAME_BYTES:
-            raise ProtocolError("message is larger than 64 KiB")
+            raise ProtocolError("message is larger than 256 KiB")
         try:
             raw = json.loads(text)
         except json.JSONDecodeError as e:

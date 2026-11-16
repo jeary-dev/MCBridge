@@ -65,7 +65,8 @@ class EnvelopeTest {
 
     @Test
     void rejectsHugeMessages() {
-        String big = "{\"v\":1,\"type\":\"x\",\"id\":\"x\",\"ts\":1,\"data\":{\"m\":\"" + "a".repeat(70_000) + "\"}}";
+        String big = "{\"v\":1,\"type\":\"x\",\"id\":\"x\",\"ts\":1,\"data\":{\"m\":\""
+                + "a".repeat(270_000) + "\"}}";
         assertThrows(ProtocolException.class, () -> Envelope.parse(big));
     }
 

@@ -109,8 +109,8 @@ def test_reply_unknown_error_code():
 
 
 def test_frame_size_limit():
-    big = {"player": PLAYER, "message": "x" * 70000}
-    with pytest.raises(ProtocolError, match="64 KiB"):
+    big = {"player": PLAYER, "message": "x" * 270000}
+    with pytest.raises(ProtocolError, match="256 KiB"):
         Envelope.from_json(wire("event.player_death", big))
 
 
@@ -136,3 +136,19 @@ def test_icon_size_limit():
              "icon": "a" * (25 * 1024)}
     with pytest.raises(ProtocolError):
         Envelope.from_json(wire("hello", hello))
+
+
+def test_join_gate_and_cards_messages():
+    Envelope.from_json(wire("event.access_request", {"player": PLAYER, "request_id": "r1"}))
+    Envelope.from_json(wire("cmd.access_result", {"request_id": "r1", "allowed": True}))
+    Envelope.from_json(wire("cmd.access_result", {"request_id": "r1", "allowed": False, "reason": "not_linked",
+                                                  "code": "ABC123"}))
+    with pytest.raises(ProtocolError):
+        Envelope.from_json(wire("cmd.access_result", {"request_id": "r1", "allowed": False}))
+    with pytest.raises(ProtocolError):
+        Envelope.from_json(wire("cmd.access_result", {"request_id": "r1", "allowed": False, "reason": "nope"}))
+    Envelope.from_json(wire("cmd.player_info", {"actor": ME.to_dict(), "player_name": "czrbyn"}))
+    Envelope.from_json(wire("cmd.advancements", {"actor": ME.to_dict(), "player_name": "czrbyn"}))
+    Envelope.from_json(wire("cmd.set_features", {"console_stream": False, "join_requirement": "role"}))
+    with pytest.raises(ProtocolError):
+        Envelope.from_json(wire("cmd.set_features", {"console_stream": False, "join_requirement": "maybe"}))

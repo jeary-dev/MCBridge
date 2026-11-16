@@ -6,7 +6,7 @@
 
     <groupId>czr</groupId>
     <artifactId>MCBridge</artifactId>
-    <version>0.3.0</version>
+    <version>0.4.0</version>
     <packaging>jar</packaging>
     <name>MCBridge</name>
     <description>Connects a Paper server to the mcbridge Discord bot.</description>

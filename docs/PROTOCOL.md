@@ -10,7 +10,7 @@ Both halves are written against this document. If code and this document disagre
 - Authentication happens in the WebSocket handshake:
   `Authorization: Bearer <server-token>`
   The bot rejects the upgrade (HTTP 401) if the token is unknown. Tokens are 32+ random bytes, one per Minecraft server.
-- Every frame is a UTF-8 **text** frame containing one JSON object (an *envelope*). Max size **64 KiB**.
+- Every frame is a UTF-8 **text** frame containing one JSON object (an *envelope*). Max size **256 KiB** (inventories with shulker contents can be big).
 
 ### Linking (getting a token)
 Server owners never copy tokens by hand. Instead:
@@ -153,6 +153,7 @@ No reply is expected.
 | `event.console`            | `{ "lines": [str] }` (max 200 lines). Only sent after `cmd.set_features` turns the stream on. |
 | `event.player_groups`      | `{ "player": Player, "groups": [str], "reason": "join" \| "change" }`. Sent on join and when groups change (LuckPerms). |
 | `event.link_request`       | `{ "player": Player, "code": str }` (max 12 chars). A player typed `/discord link <code>`; the bot answers with `cmd.link_result`. |
+| `event.access_request`     | `{ "player": Player, "request_id": str }` (max 64 chars). A player is logging in while a join requirement is on; the bot answers with `cmd.access_result`. The plugin waits up to 3 seconds. |
 
 ## 6. Commands (bot → plugin)
 
@@ -167,13 +168,35 @@ Every command **must** get exactly one `reply`. The bot gives up waiting after 1
 | `cmd.moderate` | `{ "actor": Actor, "action": "kick" \| "ban" \| "unban" \| "op" \| "deop" \| "gamemode", "player_name": str, "reason"?: str, "gamemode"?: str }` | `moderation` |
 | `cmd.tab_complete` | `{ "actor": Actor, "command": str }`. Reply data: `{ "suggestions": [str] }` | `console` |
 | `cmd.player_stats` | `{ "actor": Actor, "player_name": str }`. Reply data: name, uuid, online, stats, advancements | `stats` |
-| `cmd.inventory` | `{ "actor": Actor, "player_name": str }`. Reply data: armor, offhand, hotbar, main (online players only) | `inventory` |
+| `cmd.inventory` | `{ "actor": Actor, "player_name": str }`. Reply data: see *Inventory data* below. Works for offline players (read from their save file). | `inventory` |
+| `cmd.player_info` | `{ "actor": Actor, "player_name": str }`. Reply data: see *Player info* below. | `player_info` |
+| `cmd.advancements` | `{ "actor": Actor, "player_name": str }`. Reply data: see *Advancements* below. | `advancements` |
+| `cmd.access_result` | `{ "request_id": str, "allowed": bool, "reason"?: "not_linked" \| "missing_role" \| "not_in_discord" \| "error", "code"?: str, "role"?: str, "discord"?: str }`. `reason` is required when `allowed` is false. `code` is the code the player redeems with `/account link code:` in Discord. | `join_gate` |
 | `cmd.message` | `{ "actor": Actor, "player_name": str, "message": str }` | `message` |
-| `cmd.set_features` | `{ "console_stream": bool }` | `console_stream` |
+| `cmd.set_features` | `{ "console_stream": bool, "join_requirement"?: "off" \| "linked" \| "role" }`. Sent after `welcome` and whenever the settings change. `join_requirement` is only sent to plugins with `join_gate`. | `console_stream` or `join_gate` |
 | `cmd.set_groups` | `{ "player_uuid": str, "add": [str], "remove": [str] }` | `roles` |
 | `cmd.link_result` | `{ "player_uuid": str, "ok": bool, "message": str }` (max 256 chars). Tell a player how linking went. | `link` |
 
 The **plugin enforces its own capabilities** even if the bot asks: a `cmd.console` to a plugin that didn't advertise `console` is rejected with `FORBIDDEN`. Both sides check permissions independently.
+
+### Player info
+
+`{ name, uuid, online, op, whitelisted, banned, first_played, last_played }` (times in ms), plus the vitals
+`health, max_health, food, saturation, level, exp (0-1), world, environment ("normal" | "nether" | "the_end" | "custom"), gamemode`.
+Online players also have `ping`. Offline players' vitals come from their save file and are left out if there isn't one.
+
+### Advancements
+
+`{ name, uuid, online, done, total, tabs: [{ id, title, done, total }], recent: [{ key, title, tab, tab_title, frame, ts }] }`.
+Tabs are grouped by the first part of the advancement key (`minecraft:story/...` → `minecraft:story/root`). `frame` is
+`task`, `goal` or `challenge`; `ts` is when it was completed (ms). `recent` has up to 7 entries, newest first.
+
+### Inventory data
+
+`{ name, uuid, online, armor: [4], offhand, hotbar: [9], main: [27], ender_chest: [27], selected_slot }`. Armour is
+helmet, chestplate, leggings, boots. Empty slots are `null`. An item is
+`{ type, amount, name?, enchantments?: [{ id, level }], glint?, durability?, max_durability?, block?, contents? }`.
+`contents` (27 slots) is only set on shulker boxes in the inventory, and is dropped if the reply would get too big.
 
 ### `reply` (plugin → bot)
 ```json

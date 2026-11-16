@@ -6,7 +6,8 @@
 
 It handshakes, sends heartbeats, makes up some player events, and answers commands.
 Type 'stop' + Enter for a clean shutdown, 'lag' to toggle a lag spike, or 'link CODE' to link
-the fake player czrbyn to your Discord (get CODE with /account link). Ctrl+C "crashes" it.
+the fake player czrbyn to your Discord (get CODE with /account link), or 'join' to test the
+join requirement check. Ctrl+C "crashes" it.
 """
 from __future__ import annotations
 
@@ -38,9 +39,27 @@ FAKE_INVENTORY = {
                 "enchantments": [{"id": "sharpness", "level": 5}, {"id": "looting", "level": 3}]},
                {"type": "bow", "amount": 1}, None, {"type": "cooked_beef", "amount": 48}, None, None, None, None,
                {"type": "torch", "amount": 64}],
-    "main": [{"type": "cobblestone", "amount": 64}, {"type": "oak_log", "amount": 32}, None,
-             {"type": "diamond", "amount": 7}],
+    "main": [{"type": "cobblestone", "amount": 64, "block": True}, {"type": "oak_log", "amount": 32, "block": True},
+             None, {"type": "diamond", "amount": 7},
+             {"type": "purple_shulker_box", "amount": 1, "block": True,
+              "contents": [{"type": "iron_ingot", "amount": 64}, {"type": "gold_ingot", "amount": 20}] + [None] * 25}],
+    "selected_slot": 0,
+    "online": True,
+    "ender_chest": [{"type": "ender_pearl", "amount": 16}, {"type": "elytra", "amount": 1}] + [None] * 25,
 }
+FAKE_PLAYER_INFO = {"online": True, "health": 17.0, "max_health": 20.0, "food": 18, "saturation": 5.0, "level": 27,
+                    "exp": 0.42, "world": "world", "environment": "normal", "gamemode": "survival", "ping": 35,
+                    "op": False, "whitelisted": True, "banned": False, "first_played": 1_700_000_000_000,
+                    "last_played": 1_700_000_000_000}
+FAKE_ADVANCEMENTS = {"online": True, "done": 41, "total": 122,
+                     "tabs": [{"id": "minecraft:story/root", "title": "Minecraft", "done": 11, "total": 16},
+                              {"id": "minecraft:nether/root", "title": "Nether", "done": 9, "total": 24},
+                              {"id": "minecraft:end/root", "title": "The End", "done": 2, "total": 9},
+                              {"id": "minecraft:adventure/root", "title": "Adventure", "done": 12, "total": 46},
+                              {"id": "minecraft:husbandry/root", "title": "Husbandry", "done": 7, "total": 27}],
+                     "recent": [{"key": "minecraft:story/mine_diamond", "title": "Diamonds!",
+                                 "tab": "minecraft:story/root", "tab_title": "Minecraft", "frame": "task",
+                                 "ts": 1_700_000_000_000}]}
 FAKE_DIAGNOSTICS = {
     "worlds": [{"name": "world", "chunks": 1840, "entities": 4210, "tile_entities": 960, "players": 2},
                {"name": "world_nether", "chunks": 212, "entities": 380, "tile_entities": 40, "players": 0}],
@@ -55,7 +74,7 @@ class FakePlugin:
     def __init__(self, url: str, token: str, console: bool):
         self.url, self.token = url, token
         self.capabilities = ["chat", "whitelist", "diagnostics", "link", "moderation", "stats", "inventory", "message",
-                             "roles"] + (["console", "console_stream"] if console else [])
+                             "roles", "player_info", "advancements", "join_gate"] + (["console", "console_stream"] if console else [])
         self.console_stream = False
         self.online: list[dict] = []
         self.lagging = False
@@ -133,6 +152,13 @@ class FakePlugin:
                                          "stats": FAKE_STATS, "advancements": {"done": 58, "total": 122}})
             elif env.type == "cmd.inventory":
                 out = reply_ok(env, "", dict(FAKE_INVENTORY, name=env.data["player_name"], uuid=PLAYERS[0]["uuid"]))
+            elif env.type == "cmd.player_info":
+                out = reply_ok(env, "", dict(FAKE_PLAYER_INFO, name=env.data["player_name"], uuid=PLAYERS[0]["uuid"]))
+            elif env.type == "cmd.advancements":
+                out = reply_ok(env, "", dict(FAKE_ADVANCEMENTS, name=env.data["player_name"], uuid=PLAYERS[0]["uuid"]))
+            elif env.type == "cmd.access_result":
+                print("Join check:", env.data)
+                out = reply_ok(env, "ok")
             elif env.type == "cmd.moderate":
                 out = reply_ok(env, f"(fake) {env.data['action']} {env.data['player_name']}")
             elif env.type == "cmd.message":
@@ -168,6 +194,9 @@ class FakePlugin:
             if line.strip() == "lag":
                 self.lagging = not self.lagging
                 print("Lag spike", "on" if self.lagging else "off")
+            elif line.strip() == "join":
+                await ws.send_str(Envelope(type="event.access_request", data={
+                    "player": PLAYERS[0], "request_id": "fake-1"}).to_json())
             elif line.strip().startswith("link "):
                 await ws.send_str(Envelope(type="event.link_request", data={
                     "player": PLAYERS[0], "code": line.split()[1]}).to_json())

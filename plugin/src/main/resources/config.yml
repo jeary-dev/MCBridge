@@ -29,6 +29,15 @@ allow:
   # Only turn this on if you fully trust everyone with admin access to the Discord bot.
   console: false
 
+# Join requirements (turn them on in Discord: /settings → Access & branding).
+# Operators can always join.
+join-requirement:
+  # What happens if the bot can't be reached when someone joins:
+  #   recent = let in players who passed the check in the last 30 days, kick everyone else
+  #   allow  = let everyone in
+  #   deny   = kick everyone (except operators)
+  when-bot-offline: recent
+
 # ─────────────────────────────────────────────────────────────
 #  Messages
 #  Use classic colour codes, MiniMessage, or both in the same line:
@@ -65,6 +74,13 @@ messages:
 
   # /msg from Discord.  Placeholders: <author> <message>
   private-message: "&8[&9Discord&8] &7<author> &8→ &7you&8: &f<message>"
+
+  # Kick messages for join requirements. Use <newline> for a new line.
+  # Placeholders: <code> (the code to type in Discord), <role> (the role they need), <discord> (your Discord's name)
+  join-not-linked: "<#ff6b6b><bold>Link your Discord account to play here</bold></#ff6b6b><newline><newline><gray>In our Discord, run</gray><newline><white>/account link code:<code></white><newline><newline><dark_gray>Then rejoin. The code works for 10 minutes."
+  join-missing-role: "<#ff6b6b><bold>You can't join yet</bold></#ff6b6b><newline><newline><gray>You need the <white><role></white> role in our Discord to play here."
+  join-not-in-discord: "<#ff6b6b><bold>Join <discord> to play here</bold></#ff6b6b><newline><newline><gray>Your linked Discord account isn't in our Discord server. Join it, then rejoin."
+  join-unavailable: "<#fab219>We couldn't check your Discord link right now.</#fab219><newline><gray>Please try again in a minute."
 
   # Shown to admins when a new version is out (the whole line is clickable).  Placeholders: <current> <latest>
   update-available: "&7Update available: &f<current> &8→ &a<latest> &8· &7&nclick to download"

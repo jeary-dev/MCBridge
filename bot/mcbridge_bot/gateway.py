@@ -20,7 +20,7 @@ from typing import Awaitable, Callable
 
 from aiohttp import WSMsgType, web
 
-from .protocol import Envelope, ProtocolError
+from .protocol import MAX_FRAME_BYTES, Envelope, ProtocolError
 from .store import ServerRecord, Store
 
 LINK_ATTEMPTS_PER_MINUTE = 5
@@ -176,7 +176,7 @@ class Gateway:
             log.warning("rejected connection from %s: bad token", self.client_ip(request))
             return web.Response(status=401, text="invalid token")
 
-        ws = web.WebSocketResponse(max_msg_size=64 * 1024, heartbeat=30)
+        ws = web.WebSocketResponse(max_msg_size=MAX_FRAME_BYTES, heartbeat=30)
         await ws.prepare(request)
 
         try:

@@ -50,6 +50,15 @@ final class Messages {
             Map.entry("account-link-failed", "<" + RED + "><message>"),
             Map.entry("private-message", "<dark_gray>[</dark_gray><#5865f2>Discord</#5865f2><dark_gray>]</dark_gray> "
                     + "<#b5bac1><author></#b5bac1> <dark_gray>→</dark_gray> <gray>you</gray><dark_gray>:</dark_gray> <white><message>"),
+            Map.entry("join-not-linked", "<" + RED + "><bold>Link your Discord account to play here</bold></" + RED + ">"
+                    + "<newline><newline><gray>In our Discord, run</gray><newline><white>/account link code:<code></white>"
+                    + "<newline><newline><dark_gray>Then rejoin. The code works for 10 minutes."),
+            Map.entry("join-missing-role", "<" + RED + "><bold>You can't join yet</bold></" + RED + "><newline><newline>"
+                    + "<gray>You need the <white><role></white> role in our Discord to play here."),
+            Map.entry("join-not-in-discord", "<" + RED + "><bold>Join <discord> to play here</bold></" + RED + "><newline>"
+                    + "<newline><gray>Your linked Discord account isn't in our Discord server. Join it, then rejoin."),
+            Map.entry("join-unavailable", "<" + AMBER + ">We couldn't check your Discord link right now.</" + AMBER + ">"
+                    + "<newline><gray>Please try again in a minute."),
             Map.entry("update-available", "<gray>Update available: <white><current></white> <dark_gray>→</dark_gray> "
                     + "<" + GREEN + "><latest></" + GREEN + "> <dark_gray>·</dark_gray> <gray><u>click to download</u>")
     );

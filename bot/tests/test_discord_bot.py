@@ -56,12 +56,13 @@ def test_slash_commands_are_registered_with_permissions():
         cmds = {c.name: c for c in bot.tree.get_commands()}
         assert set(cmds) == {"help", "setup", "settings", "servers", "status", "player", "top", "lag", "recap",
                              "whitelist-request", "account", "unlink", "whitelist", "console", "audit",
-                             "mod", "msg", "stats", "inventory", "rolesync"}
+                             "mod", "msg", "stats", "inventory", "rolesync", "advancements"}
         assert all(c.guild_only for c in cmds.values())
         assert cmds["console"].default_permissions.administrator
         for staff in ("setup", "settings", "lag", "recap", "unlink", "whitelist", "audit", "mod", "msg", "rolesync"):
             assert cmds[staff].default_permissions.manage_guild, staff
-        for everyone in ("status", "player", "top", "whitelist-request", "account", "stats", "inventory"):
+        for everyone in ("status", "player", "top", "whitelist-request", "account", "stats", "inventory",
+                         "advancements"):
             assert cmds[everyone].default_permissions is None, everyone
         assert {c.name for c in cmds["account"].commands} == {"link", "unlink"}
         assert {c.name for c in cmds["mod"].commands} == {"kick", "ban", "unban", "op", "deop", "gamemode"}
@@ -275,4 +276,125 @@ def test_demo_404_without_config():
             assert (await client.get("/v1/demo")).status == 404
         finally:
             await client.close()
+    asyncio.run(go())
+
+
+class FakeRole:
+    def __init__(self, rid, name):
+        self.id, self.name = rid, name
+
+    def __eq__(self, other):
+        return getattr(other, "id", None) == self.id
+
+    def __hash__(self):
+        return self.id
+
+
+class FakeMember:
+    def __init__(self, roles):
+        self.roles = roles
+        self.display_name = "Corbyn"
+
+
+class FakeGuild:
+    name = "Test Discord"
+
+    def __init__(self, members, roles):
+        self.members, self.roles = members, roles
+
+    def get_member(self, mid):
+        return self.members.get(mid)
+
+    async def fetch_member(self, mid):
+        import discord
+        raise discord.NotFound(type("R", (), {"status": 404, "reason": "x"})(), "Unknown Member")
+
+    def get_role(self, rid):
+        return self.roles.get(rid)
+
+
+def test_join_requirements():
+    async def go():
+        store = Store(":memory:")
+        bot = MCBridgeBot(store, Gateway(store), SETTINGS)
+        rec, _ = store.create_server("111", "SMP")
+        vip = FakeRole(7, "VIP")
+        guild = FakeGuild({5: FakeMember([])}, {7: vip})
+        bot.get_guild = lambda gid: guild if gid == 111 else None
+        player = {"uuid": "u-1", "name": "czrbyn"}
+
+        assert await bot.access_decision(rec, player) == {"allowed": True}
+        store.set_setting(rec.server_id, "join_mode", "linked")
+        result = await bot.access_decision(rec, player)
+        assert result["allowed"] is False and result["reason"] == "not_linked" and len(result["code"]) == 6
+        assert store.redeem_join_code("111", result["code"], "5")["uuid"] == "u-1"
+        assert await bot.access_decision(rec, player) == {"allowed": True}
+
+        store.set_setting(rec.server_id, "join_mode", "role")
+        store.set_setting(rec.server_id, "join_role", "7")
+        assert await bot.access_decision(rec, player) == {"allowed": False, "reason": "missing_role", "role": "VIP"}
+        guild.members[5].roles.append(vip)
+        assert await bot.access_decision(rec, player) == {"allowed": True}
+
+        store.link_account("111", "6", "u-2", "gone")
+        result = await bot.access_decision(rec, {"uuid": "u-2", "name": "gone"})
+        assert result["reason"] == "not_in_discord"
+    asyncio.run(go())
+
+
+def test_join_requirement_is_pushed_to_new_plugins():
+    async def go():
+        store = Store(":memory:")
+        bot = MCBridgeBot(store, Gateway(store), SETTINGS)
+        rec, _ = store.create_server("111", "SMP")
+        store.set_setting(rec.server_id, "join_mode", "linked")
+        sent = []
+
+        class S:
+            server_id = rec.server_id
+            capabilities = {"join_gate"}
+
+            async def command(self, env, timeout=10):
+                sent.append(env)
+                return {"ok": True}
+        await bot.push_features(S())
+        assert sent[0].data == {"console_stream": False, "join_requirement": "linked"}
+        S.capabilities = {"chat"}
+        await bot.push_features(S())
+        assert len(sent) == 1
+    asyncio.run(go())
+
+
+def test_branding():
+    import discord
+    from mcbridge_bot import embeds
+    store = Store(":memory:")
+    bot = MCBridgeBot(store, Gateway(store), SETTINGS)
+    rec, _ = store.create_server("111", "SMP")
+    e = bot.brand(discord.Embed(color=embeds.BLUE), rec.server_id)
+    assert e.color.value == embeds.BLUE and e.footer.text is None
+    store.set_setting(rec.server_id, "brand_color", "#FF0000")
+    store.set_setting(rec.server_id, "brand_footer", "Cool SMP")
+    e = bot.brand(discord.Embed(color=embeds.BLUE), rec.server_id)
+    assert e.color.value == 0xFF0000 and e.footer.text == "Cool SMP"
+    e = discord.Embed(color=embeds.GREEN)
+    e.set_footer(text="MCBridge · plugin 1 · updated")
+    bot.brand(e, rec.server_id)
+    assert e.color.value == embeds.GREEN and e.footer.text == "Cool SMP · plugin 1 · updated"
+    assert bot.accent(rec.server_id) == "#ff0000"
+
+
+def test_inventory_menu_and_player_buttons():
+    async def go():
+        from mcbridge_bot import views
+        data = {"name": "czrbyn", "hotbar": [{"type": "red_shulker_box", "contents": []}],
+                "main": [None, {"type": "shulker_box", "name": "Loot", "contents": [None] * 27}],
+                "ender_chest": [None] * 27}
+        view = views.ContainerView("SMP", data, "#3987e5")
+        assert [o.label for o in view.children[0].options] == ["#1 Red Shulker Box", "#2 Loot", "Ender chest"]
+        assert views.ContainerView("SMP", {"name": "x"}, "#3987e5").empty
+        buttons = views.player_actions("srv_abc123", "czrbyn", {"online": True, "op": True})
+        ids = [b.item.custom_id for b in buttons.children]
+        assert ids == ["mcb:pa:kick:srv_abc123:czrbyn", "mcb:pa:ban:srv_abc123:czrbyn", "mcb:pa:deop:srv_abc123:czrbyn"]
+        assert all(views.PlayerAction.__discord_ui_compiled_template__.fullmatch(i) for i in ids)
     asyncio.run(go())

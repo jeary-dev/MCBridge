@@ -47,8 +47,11 @@ final class PaperCommandHandler implements CommandHandler {
             case "cmd.link_result" -> linkResult(cmd.data());
             case "cmd.moderate" -> moderate(cmd.data());
             case "cmd.tab_complete" -> tabComplete(cmd.data());
-            case "cmd.player_stats" -> playerLookup(cmd.data(), true);
-            case "cmd.inventory" -> playerLookup(cmd.data(), false);
+            case "cmd.player_stats" -> stats(cmd.data());
+            case "cmd.player_info" -> lookup(cmd.data(), Lookup.INFO);
+            case "cmd.advancements" -> lookup(cmd.data(), Lookup.ADVANCEMENTS);
+            case "cmd.inventory" -> lookup(cmd.data(), Lookup.INVENTORY);
+            case "cmd.access_result" -> accessResult(cmd.data());
             case "cmd.message" -> message(cmd.data());
             case "cmd.set_features" -> setFeatures(cmd.data());
             case "cmd.set_groups" -> setGroups(cmd.data());
@@ -218,12 +221,62 @@ final class PaperCommandHandler implements CommandHandler {
         });
     }
 
-    private CompletableFuture<JsonObject> playerLookup(JsonObject data, boolean stats) {
+    private CompletableFuture<JsonObject> stats(JsonObject data) {
         String name = Envelope.str(data, "player_name");
         if (name == null || !PLAYER_NAME.matcher(name).matches()) {
             return done(Replies.error(ErrorCode.INVALID, "not a valid Minecraft username"));
         }
-        return onMainThread(() -> stats ? PlayerInfo.stats(name) : PlayerInfo.inventory(name));
+        return onMainThread(() -> PlayerInfo.stats(name));
+    }
+
+    private enum Lookup { INFO, ADVANCEMENTS, INVENTORY }
+
+    private CompletableFuture<JsonObject> lookup(JsonObject data, Lookup kind) {
+        String name = Envelope.str(data, "player_name");
+        if (name == null || !PLAYER_NAME.matcher(name).matches()) {
+            return done(Replies.error(ErrorCode.INVALID, "not a valid Minecraft username"));
+        }
+        CompletableFuture<CompletableFuture<JsonObject>> step = new CompletableFuture<>();
+        try {
+            Bukkit.getScheduler().runTask(plugin, () -> {
+                try {
+                    step.complete(lookupOnMain(name, kind));
+                } catch (Exception e) {
+                    step.complete(done(Replies.error(ErrorCode.INTERNAL, String.valueOf(e.getMessage()))));
+                }
+            });
+        } catch (Exception e) {
+            return done(Replies.error(ErrorCode.INTERNAL, "server is shutting down"));
+        }
+        return step.thenCompose(f -> f);
+    }
+
+    private CompletableFuture<JsonObject> lookupOnMain(String name, Lookup kind) {
+        OfflinePlayer p = PlayerInfo.find(name);
+        if (p == null) return done(PlayerInfo.notFound(name));
+        if (p instanceof Player online) {
+            return done(switch (kind) {
+                case INFO -> PlayerInfo.playerInfo(online, null);
+                case ADVANCEMENTS -> PlayerInfo.advancementsOnline(online);
+                case INVENTORY -> PlayerInfo.inventoryOnline(online);
+            });
+        }
+        if (kind == Lookup.ADVANCEMENTS) {
+            java.nio.file.Path file = PlayerInfo.advancementsFile(p);
+            return CompletableFuture.supplyAsync(() -> PlayerInfo.readJson(file))
+                    .thenCompose(saved -> onMainThread(() -> PlayerInfo.advancementsOffline(p, saved)));
+        }
+        java.nio.file.Path file = PlayerInfo.playerDataFile(p);
+        return CompletableFuture.supplyAsync(() -> PlayerInfo.readPlayerData(file))
+                .thenCompose(saved -> onMainThread(() -> kind == Lookup.INFO
+                        ? PlayerInfo.playerInfo(p, saved) : PlayerInfo.inventoryOffline(p, saved)));
+    }
+
+    private CompletableFuture<JsonObject> accessResult(JsonObject data) {
+        String id = Envelope.str(data, "request_id");
+        if (id == null) return done(Replies.error(ErrorCode.INVALID, "missing request_id"));
+        boolean waiting = plugin.joinGate().complete(id, data);
+        return done(Replies.ok(waiting ? "applied" : "too late"));
     }
 
     private CompletableFuture<JsonObject> message(JsonObject data) {
@@ -246,6 +299,8 @@ final class PaperCommandHandler implements CommandHandler {
     private CompletableFuture<JsonObject> setFeatures(JsonObject data) {
         boolean stream = data.has("console_stream") && data.get("console_stream").isJsonPrimitive()
                 && data.get("console_stream").getAsBoolean();
+        String joinRequirement = Envelope.str(data, "join_requirement");
+        if (joinRequirement != null) plugin.joinGate().setMode(joinRequirement);
         return onMainThread(() -> {
             plugin.setConsoleStream(stream && plugin.allowed("console"));
             return Replies.ok("ok");

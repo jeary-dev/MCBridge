@@ -9,7 +9,10 @@ Status bots can only *ping* your server. MCBridge runs inside it, so it knows wh
 - 🔍 **Lag diagnostics**: the busiest chunks (with coordinates) and most common entities, attached to lag alerts and on `/lag`
 - 💬 **Two-way chat bridge** with each player's name and skin head, plus a join/leave/death/advancement feed
 - 📝 **Whitelist requests** with Approve/Deny buttons and DMs to the player
-- 🏆 **Player stats**: `/player` (playtime, sessions, deaths, last seen) and a `/top` leaderboard
+- 🏆 **Player cards**: `/player` (skin, health, hunger, XP, world, playtime, with Kick/Ban/Op buttons), `/advancements`,
+  `/inventory` (with shulker boxes and ender chest, offline players too) as image cards, and a `/top` leaderboard
+- 🚪 **Join requirements**: players must link their Discord (and optionally have a role) to join
+- 🎨 **Branding**: your own embed colour and footer
 - 🗓️ **Daily recap** with peak players, uptime, average TPS, lag minutes and a 24-hour graph
 - 🔗 **Account linking** (`/account link` + `/discord link <code>` in-game) with an automatic role
 - ⚙️ **Setup wizard**: `/settings` picks every channel and role with menus
@@ -43,7 +46,7 @@ Every message follows one documented contract: **[docs/PROTOCOL.md](docs/PROTOCO
 
 1. **Discord Developer Portal** → your app → **Bot**: reset the token, and turn on **Message Content Intent** (for chat).
 2. Invite it: **OAuth2 → URL Generator**, scopes `bot` + `applications.commands`, permissions
-   View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Add Reactions, Manage Webhooks and Manage Roles (permission number `805424192`).
+   View Channels, Send Messages, Embed Links, Attach Files, Read Message History, Add Reactions, Manage Webhooks, Manage Roles and Manage Channels (permission number `805424208`).
 3. Then:
 
 ```bash
@@ -74,11 +77,17 @@ The jar ends up in `plugin/target/MCBridge-0.1.0.jar`.
 | `/setup name` | Manage Server | Get a link code for a new Minecraft server |
 | `/settings` | Manage Server | Channels, roles, daily recap, server address, live status |
 | `/status [live]` | everyone (`live` needs Manage Server) | Stats card with a graph of the last hour |
-| `/player name` | everyone | Playtime, sessions, deaths, last seen |
+| `/player name` | everyone | Image card: health, XP, world, playtime and more |
+| `/advancements name` | everyone | Advancement progress per tab and recent completions |
 | `/top` | everyone | Most active players |
 | `/whitelist-request player` | everyone | Ask staff to whitelist you |
 | `/account link` / `/account unlink` | everyone | Link your Minecraft account |
 | `/servers` | everyone | List linked servers |
+| `/stats name` | everyone | Minecraft statistics |
+| `/inventory player` | everyone | Inventory image, shulker boxes and ender chest |
+| `/mod kick/ban/unban/op/deop/gamemode` | Manage Server | Moderate players |
+| `/msg player message` | Manage Server | Message an online player |
+| `/rolesync add/remove/list` | Manage Server | Link LuckPerms/Vault groups to Discord roles |
 | `/lag` | Manage Server | What's using the server right now |
 | `/recap` | Manage Server | Stats and graph for the last 24 hours |
 | `/whitelist add/remove player` | Manage Server | Edit the whitelist |
@@ -86,6 +95,9 @@ The jar ends up in `plugin/target/MCBridge-0.1.0.jar`.
 | `/audit` | Manage Server | Recent actions |
 | `/unlink` | Manage Server | Disconnect a server |
 
+## Website
+
+The website (mcbridge.dev) lives in `web/` (Next.js, deployed on Cloudflare Workers). The guide's command pages come from `docs/COMMANDS.md`.
 
 ## Roadmap
 
@@ -96,6 +108,8 @@ The jar ends up in `plugin/target/MCBridge-0.1.0.jar`.
 - [x] Discord: `/setup`, `/status`, live status, alerts, chat bridge, feed, whitelist, console, audit
 - [x] Whitelist requests, webhook chat with heads, stats, recaps, lag diagnostics, account linking, setup wizard
 - [x] Public hosting (Cloudflare Tunnel, `wss://`)
+- [x] Image cards (player, advancements, inventory), join requirements, branding
+- [ ] Discord Linked Roles
 - [ ] Fabric version of the plugin
 - [ ] Premium tier
 - [ ] Web dashboard
@@ -103,3 +117,5 @@ The jar ends up in `plugin/target/MCBridge-0.1.0.jar`.
 ## License
 
 [AGPL-3.0](LICENSE): free to use, self-host and modify. If you run a modified version as a public service, you must share your changes.
+
+The image cards use the [Inter](https://github.com/rsms/inter) font (SIL Open Font License, see `bot/mcbridge_bot/fonts/OFL.txt`). They draw their own item and heart artwork and use no Minecraft textures. Player skins come from [mc-heads.net](https://mc-heads.net).

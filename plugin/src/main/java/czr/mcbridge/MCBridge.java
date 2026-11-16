@@ -33,6 +33,7 @@ public final class MCBridge extends JavaPlugin {
     private HeartbeatSampler sampler;
     private ConsoleStream consoleStream;
     private PermissionsBridge permissions;
+    private JoinGate joinGate;
     private final Map<UUID, List<String>> lastGroups = new ConcurrentHashMap<>();
     private boolean startAnnounced;
 
@@ -43,6 +44,8 @@ public final class MCBridge extends JavaPlugin {
         sampler = new HeartbeatSampler(this);
         sampler.start();
         getServer().getPluginManager().registerEvents(new EventsListener(this), this);
+        joinGate = new JoinGate(this);
+        getServer().getPluginManager().registerEvents(joinGate, this);
         updates = new UpdateNotifier(this);
         getServer().getPluginManager().registerEvents(updates, this);
         updates.start();
@@ -99,6 +102,9 @@ public final class MCBridge extends JavaPlugin {
         capabilities.add("link");
         capabilities.add("stats");
         capabilities.add("inventory");
+        capabilities.add("player_info");
+        capabilities.add("advancements");
+        capabilities.add("join_gate");
         if (allowed("chat")) capabilities.add("message");
         if (allowed("moderation")) capabilities.add("moderation");
         if (allowed("console")) capabilities.add("console_stream");
@@ -172,6 +178,10 @@ public final class MCBridge extends JavaPlugin {
 
     boolean allowed(String capability, boolean byDefault) {
         return getConfig().getBoolean("allow." + capability, byDefault);
+    }
+
+    JoinGate joinGate() {
+        return joinGate;
     }
 
     PermissionsBridge permissions() {
