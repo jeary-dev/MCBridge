@@ -10,8 +10,10 @@ const COLUMNS: { title: string; links: FooterLink[] }[] = [
     links: [
       { href: INVITE_URL, label: "Add to Discord" },
       { href: DOWNLOAD_URL, label: "Download the plugin" },
-      { href: "/#features", label: "Features" },
-      { href: "/#faq", label: "FAQ" },
+      { href: "/docs", label: "Docs" },
+      { href: "/docs/commands", label: "Commands" },
+      { href: "/demo", label: "Live demo" },
+      { href: "/docs/help", label: "Help & FAQ" },
     ],
   },
   {

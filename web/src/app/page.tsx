@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { DOWNLOAD_URL, INVITE_URL } from "@/config";
+import { DOWNLOAD_URL, INVITE_URL, SUPPORT_INVITE } from "@/config";
 import { pageMeta } from "@/lib/meta";
 import { Button } from "@/components/Button";
 import { Reveal } from "@/components/Reveal";
@@ -16,6 +16,12 @@ export const metadata: Metadata = pageMeta({
   path: "/",
   absoluteTitle: true,
 });
+
+const LIVE_POINTS = [
+  { title: "The real status card", body: "TPS, MSPT, memory and players, straight from the server, refreshed every 10 seconds." },
+  { title: "The last hour", body: "Players and TPS over the last hour, with the line where a lag alert would fire." },
+  { title: "Chat both ways", body: "In-game chat, joins and deaths as they happen. Say hi in our Discord and it shows up in-game." },
+];
 
 export default function Home() {
   return (
@@ -135,10 +141,36 @@ export default function Home() {
         </Reveal>
       </section>
 
-      {/* 04 · Setup */}
-      <section id="setup" className="mx-auto max-w-[1240px] px-4 pb-28 sm:px-6 md:pb-40 lg:px-10">
+      {/* 04 · Live demo */}
+      <section id="live" className="mx-auto max-w-[1240px] px-4 pb-28 sm:px-6 md:pb-40 lg:px-10">
         <SectionHead
           index="04"
+          label="Live demo"
+          kanji="実況"
+          title="See it live."
+          intro="Our demo server runs MCBridge right now. Watch its status, players and TPS, and chat with it from our Discord."
+        />
+        <Reveal className="grid gap-px border border-line bg-line md:grid-cols-3">
+          {LIVE_POINTS.map((p, i) => (
+            <div key={p.title} className="bg-ink p-7">
+              <span className="font-mono text-[0.75rem] tracking-[0.2em] text-mute">{String(i + 1).padStart(2, "0")}</span>
+              <h3 className="mt-6 font-display text-[1.2rem] font-medium tracking-[-0.02em]">{p.title}</h3>
+              <p className="mt-2 text-[0.92rem] leading-relaxed text-paper-dim">{p.body}</p>
+            </div>
+          ))}
+        </Reveal>
+        <div className="mt-8 flex flex-col gap-3 sm:flex-row">
+          <Button href="/demo">See it live</Button>
+          <Button href={SUPPORT_INVITE} variant="ghost">
+            Talk to it in our Discord
+          </Button>
+        </div>
+      </section>
+
+      {/* 05 · Setup */}
+      <section id="setup" className="mx-auto max-w-[1240px] px-4 pb-28 sm:px-6 md:pb-40 lg:px-10">
+        <SectionHead
+          index="05"
           label="Setup"
           kanji="手順"
           title="Three steps. About two minutes."
@@ -177,9 +209,9 @@ export default function Home() {
         </div>
       </section>
 
-      {/* 05 · FAQ */}
+      {/* 06 · FAQ */}
       <section id="faq" className="mx-auto max-w-[1240px] px-4 pb-28 sm:px-6 md:pb-40 lg:px-10">
-        <SectionHead index="05" label="FAQ" kanji="質問" title="Questions, answered." />
+        <SectionHead index="06" label="FAQ" kanji="質問" title="Questions, answered." />
         <Reveal className="border-t border-line-strong lg:ml-[calc(100%/12*4)]">
           {FAQ.map((f) => (
             <details key={f.q} className="group border-b border-line">

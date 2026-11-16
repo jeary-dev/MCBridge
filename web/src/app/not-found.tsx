@@ -18,16 +18,10 @@ export default function NotFound() {
         無
       </span>
       <div className="mx-auto w-full max-w-[1240px] px-4 pt-24 sm:px-6 lg:px-10">
-        <p className="fade-in font-mono text-[0.7rem] uppercase tracking-[0.22em] text-mute">Error 404</p>
+        <p className="fade-in font-mono text-[0.75rem] uppercase tracking-[0.22em] text-mute">Error 404</p>
         <h1 className="mt-6 font-display text-[clamp(2.6rem,7vw,5.5rem)] font-medium leading-none tracking-[-0.045em]">
-          <span className="line-mask">
-            <span>Nothing here.</span>
-          </span>
-          <span className="line-mask">
-            <span className="text-paper-dim" style={{ ["--delay" as string]: "150ms" }}>
-              The bridge ends.
-            </span>
-          </span>
+          <span className="block">Nothing here. </span>
+          <span className="block text-paper-dim">The bridge ends.</span>
         </h1>
         <p className="fade-in mt-8 max-w-md text-paper-dim" style={{ ["--delay" as string]: "400ms" }}>
           The page you&apos;re looking for doesn&apos;t exist or has moved.
@@ -37,7 +31,7 @@ export default function NotFound() {
           className="fade-in group mt-10 inline-flex h-12 items-center gap-3 border border-line-strong px-6 text-[0.9rem] transition-colors hover:border-paper"
           style={{ ["--delay" as string]: "550ms" }}
         >
-          <span className="transition-transform duration-500 group-hover:-translate-x-1">←</span>
+          <span aria-hidden className="transition-transform duration-500 group-hover:-translate-x-1">←</span>
           Back to MCBridge
         </Link>
       </div>

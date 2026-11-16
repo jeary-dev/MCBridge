@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 
-const COMMAND = "mcbridge link K7P-2QX";
+const COMMAND = "mcbridge link K7PQ2X";
 const OUTPUT = [
   "MCBridge: linking...",
   'MCBridge: linked as "Hinoki SMP" - connecting to Discord!',

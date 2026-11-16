@@ -1,3 +1,4 @@
+import Link from "next/link";
 import type { ReactNode } from "react";
 
 type Props = {
@@ -15,12 +16,8 @@ export function Button({ href, children, variant = "solid", className = "" }: Pr
     variant === "solid"
       ? "bg-accent text-ink"
       : "border border-line-strong text-paper hover:border-paper";
-  return (
-    <a
-      href={href}
-      className={`${base} ${styles} ${className}`}
-      {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-    >
+  const inner = (
+    <>
       <span
         aria-hidden
         className={`absolute inset-0 origin-left scale-x-0 transition-transform duration-500 ease-[cubic-bezier(.16,1,.3,1)] group-hover:scale-x-100 ${
@@ -34,6 +31,22 @@ export function Button({ href, children, variant = "solid", className = "" }: Pr
       >
         →
       </span>
+    </>
+  );
+  if (href.startsWith("/")) {
+    return (
+      <Link href={href} className={`${base} ${styles} ${className}`}>
+        {inner}
+      </Link>
+    );
+  }
+  return (
+    <a
+      href={href}
+      className={`${base} ${styles} ${className}`}
+      {...(external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+    >
+      {inner}
     </a>
   );
 }

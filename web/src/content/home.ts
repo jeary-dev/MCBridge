@@ -116,7 +116,7 @@ export const FAQ: Faq[] = [
   },
   {
     q: "Which servers does it work on?",
-    a: "Paper 1.21 on Java 21. A Fabric version is on the roadmap.",
+    a: "Paper or a Paper fork like Purpur, on Minecraft 1.21.x with Java 21. Spigot and Folia aren't supported. A Fabric version is on the roadmap.",
   },
   {
     q: "How is this different from a status bot?",

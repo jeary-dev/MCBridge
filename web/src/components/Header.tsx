@@ -1,20 +1,27 @@
 "use client";
 
 import Link from "next/link";
+import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import { GITHUB_URL, INVITE_URL } from "@/config";
 import { Logo } from "./Logo";
 
 const NAV = [
   { href: "/#features", label: "Features" },
-  { href: "/#compare", label: "Compare" },
-  { href: "/#setup", label: "Setup" },
-  { href: "/#faq", label: "FAQ" },
+  { href: "/docs", label: "Docs" },
+  { href: "/docs/commands", label: "Commands" },
+  { href: "/demo", label: "Live demo" },
 ];
 
 export function Header() {
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
+  const path = usePathname() ?? "/";
+  // Docs is "current" anywhere in /docs except the commands section, which has its own link.
+  const isCurrent = (href: string) =>
+    href === "/docs"
+      ? path.startsWith("/docs") && !path.startsWith("/docs/commands")
+      : !href.startsWith("/#") && path.startsWith(href);
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 12);
@@ -36,9 +43,14 @@ export function Header() {
 
         <nav aria-label="Main" className="hidden items-center gap-9 md:flex">
           {NAV.map((n) => (
-            <a key={n.href} href={n.href} className="nav-link">
+            <Link
+              key={n.href}
+              href={n.href}
+              className="nav-link"
+              aria-current={isCurrent(n.href) ? "page" : undefined}
+            >
               {n.label}
-            </a>
+            </Link>
           ))}
           <a href={GITHUB_URL} target="_blank" rel="noopener noreferrer" className="nav-link">
             GitHub
@@ -85,11 +97,12 @@ export function Header() {
                 <a
                   href={n.href}
                   onClick={() => setOpen(false)}
+                  aria-current={isCurrent(n.href) ? "page" : undefined}
                   className="flex items-center justify-between py-4 font-display text-xl tracking-tight"
                   {...(n.href.startsWith("http") ? { target: "_blank", rel: "noopener noreferrer" } : {})}
                 >
                   {n.label}
-                  <span className="text-mute">→</span>
+                  <span aria-hidden className="text-mute">→</span>
                 </a>
               </li>
             ))}
