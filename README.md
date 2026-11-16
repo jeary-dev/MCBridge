@@ -88,7 +88,21 @@ The jar ends up in `plugin/target/MCBridge-0.1.0.jar`.
 
 ## Website
 
-`site/` is the static site for mcbridge.dev (landing page, privacy policy, terms). Deploy it with Cloudflare Pages.
+`web/` is the site for mcbridge.dev (landing page, privacy policy, terms): Next.js, exported as a fully static site.
+
+```bash
+cd web
+npm install
+npm run dev      # http://localhost:3000
+npm run build    # writes the static site to web/out
+```
+
+Deploy with Cloudflare Pages: root directory `web`, build command `npm run build`, output directory `out`.
+Set `NEXT_PUBLIC_DISCORD_CLIENT_ID` in the Pages environment so the "Add to Discord" links use the real bot.
+All outbound links (invite, download, GitHub, email) live in [`web/src/config.ts`](web/src/config.ts).
+
+- **Copy:** landing page text is in `web/src/content/home.ts`; legal text is in `web/src/app/privacy` and `web/src/app/terms`.
+- **OG image:** generated at build time by `web/src/app/og.png/route.tsx` and written to `web/out/og.png`.
 
 ## Roadmap
 

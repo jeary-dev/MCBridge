@@ -28,3 +28,22 @@ config.local.*
 # --- OS junk ---
 .DS_Store
 Thumbs.db
+
+# --- Node / Next.js (web) ---
+web/node_modules/
+web/.next/
+web/out/
+web/build/
+web/coverage/
+web/.vercel/
+web/next-env.d.ts
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.pnp
+.pnp.*
+*.pem
+web/.env*
+!web/.env.example
