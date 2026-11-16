@@ -24,6 +24,7 @@ public final class MCBridge extends JavaPlugin {
 
     private BridgeClient client;
     private Messages messages;
+    private UpdateNotifier updates;
     private HeartbeatSampler sampler;
     private boolean startAnnounced;
 
@@ -34,6 +35,10 @@ public final class MCBridge extends JavaPlugin {
         sampler = new HeartbeatSampler(this);
         sampler.start();
         getServer().getPluginManager().registerEvents(new EventsListener(this), this);
+
+        updates = new UpdateNotifier(this);
+        getServer().getPluginManager().registerEvents(updates, this);
+        updates.start();
 
         PluginCommand cmd = getCommand("mcbridge");
         if (cmd != null) {
@@ -126,6 +131,10 @@ public final class MCBridge extends JavaPlugin {
         } catch (IOException e) {
             return null;
         }
+    }
+
+    UpdateNotifier updates() {
+        return updates;
     }
 
     Messages messages() {

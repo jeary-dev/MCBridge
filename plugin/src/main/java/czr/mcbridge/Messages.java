@@ -46,7 +46,9 @@ final class Messages {
             Map.entry("account-offline", "<" + RED + ">This server isn't connected to Discord right now. Try again later."),
             Map.entry("account-linking", "<gray>Linking your account..."),
             Map.entry("account-linked", "<" + GREEN + "><message>"),
-            Map.entry("account-link-failed", "<" + RED + "><message>")
+            Map.entry("account-link-failed", "<" + RED + "><message>"),
+            Map.entry("update-available", "<gray>Update available: <white><current></white> <dark_gray>→</dark_gray> "
+                    + "<" + GREEN + "><latest></" + GREEN + "> <dark_gray>·</dark_gray> <gray><u>click to download</u>")
     );
 
     private final MCBridge plugin;

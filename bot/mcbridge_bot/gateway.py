@@ -87,6 +87,7 @@ class Gateway:
                  heartbeat_interval_s: int = HEARTBEAT_INTERVAL_S, silence_timeout_s: float | None = None,
                  trust_cloudflare: bool = False, lost_grace_s: float = LOST_GRACE_S):
         self.store = store
+        self.health_check: Callable[[], str | None] | None = None
         self.lost_grace_s = lost_grace_s
         self._pending_lost: dict[str, asyncio.Task] = {}
         self.trust_cloudflare = trust_cloudflare
@@ -124,6 +125,9 @@ class Gateway:
         return request.remote or "?"
 
     async def _handle_health(self, request: web.Request) -> web.Response:
+        problem = self.health_check() if self.health_check else None
+        if problem:
+            return web.Response(status=503, text=f"unhealthy: {problem}")
         return web.Response(text="ok")
 
     async def _handle_link(self, request: web.Request) -> web.Response:

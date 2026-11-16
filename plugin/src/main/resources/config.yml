@@ -10,7 +10,8 @@ bot-url: "wss://bot.mcbridge.dev/v1/plugin"
 # run /setup in Discord, then /mcbridge link <code> in-game, and it's saved here automatically.
 # Treat it like a password: anyone with it can pretend to be your server.
 token: ""
-
+# Check GitHub for new MCBridge versions (every 6 hours) and tell admins when one is out.
+update-check: true
 # What the bot is ALLOWED to do on this server.
 # The plugin checks these itself, so the bot can never do more than you allow here.
 allow:
@@ -53,3 +54,6 @@ messages:
   linking: "<gray>Linking..."
   link-success: "<#3ddc84>Linked as <white><name></white>!</#3ddc84> <gray>Connecting to Discord..."
   link-failed: "<#ff6b6b>Linking failed:</#ff6b6b> <gray><reason>"
+
+  # Shown to admins when a new version is out (the whole line is clickable).  Placeholders: <current> <latest>
+  update-available: "&7Update available: &f<current> &8→ &a<latest> &8· &7&nclick to download"

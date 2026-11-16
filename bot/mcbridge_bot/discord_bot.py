@@ -68,6 +68,7 @@ class MCBridgeBot(commands.Bot):
         self._webhooks: dict[str, discord.Webhook] = {}
         self._link_attempts: dict[str, deque[float]] = defaultdict(deque)
         gateway.on(self._on_gateway)
+        gateway.health_check = self.health_problem
         self.tree.on_error = self.on_app_command_error
 
     async def setup_hook(self) -> None:
@@ -90,6 +91,15 @@ class MCBridgeBot(commands.Bot):
         log.info("logged in as %s, in %d Discord servers", self.user, len(self.guilds))
         self._presence = None
         await self.update_presence()
+
+    def health_problem(self) -> str | None:
+        if self.is_closed():
+            return "discord connection closed"
+        if not self.is_ready():
+            return "not connected to discord yet"
+        if self.latency != self.latency or self.latency > 30:
+            return "discord heartbeat lost"
+        return None
 
     def presence_text(self) -> str:
         online = len(self.gateway.sessions)

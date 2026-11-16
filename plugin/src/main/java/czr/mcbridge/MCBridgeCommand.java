@@ -51,6 +51,7 @@ final class MCBridgeCommand implements CommandExecutor, TabCompleter {
         } else {
             msg.send(sender, "status-other", text("state", c.state().name().toLowerCase()));
         }
+        plugin.updates().tell(sender);
     }
 
     private void link(CommandSender sender, String code) {
