@@ -31,6 +31,7 @@ HEARTBEAT_INTERVAL_S = 10
 MISSED_HEARTBEATS_ALLOWED = 3
 HELLO_TIMEOUT_S = 10
 COMMAND_TIMEOUT_S = 10
+LOST_GRACE_S = 30
 
 Listener = Callable[["Session", str, dict], Awaitable[None]]
 PingCheck = Callable[[str], Awaitable[bool]]
@@ -83,8 +84,10 @@ class Session:
 
 class Gateway:
     def __init__(self, store: Store, ping_check: PingCheck | None = None,
-                 heartbeat_interval_s: int = HEARTBEAT_INTERVAL_S, silence_timeout_s: float | None = None, trust_cloudflare: bool = False):
+                 heartbeat_interval_s: int = HEARTBEAT_INTERVAL_S, silence_timeout_s: float | None = None, trust_cloudflare: bool = False, lost_grace_s: float = LOST_GRACE_S):
         self.store = store
+        self.lost_grace_s = lost_grace_s
+        self._pending_lost: dict[str, asyncio.Task] = {}
         self.trust_cloudflare = trust_cloudflare
         self._link_attempts: dict[str, deque[float]] = defaultdict(deque)
         self.ping_check = ping_check
@@ -167,6 +170,10 @@ class Gateway:
             return ws
 
         session = Session(record=record, ws=ws, hello=hello.data)
+        pending = self._pending_lost.pop(record.server_id, None)
+        if pending is not None:
+            pending.cancel()
+            log.info("%s came back within the grace period", record.server_id)
         old = self.sessions.get(record.server_id)
         self.sessions[record.server_id] = session
         if old is not None:
@@ -198,6 +205,13 @@ class Gateway:
                         fut.set_exception(CommandFailed("DISCONNECTED", "plugin disconnected"))
                 await self._on_lost(session)
         return ws
+
+    async def _lost_after_grace(self, session: Session) -> None:
+        await asyncio.sleep(self.lost_grace_s)
+        if self._pending_lost.get(session.server_id) is asyncio.current_task():
+            del self._pending_lost[session.server_id]
+        if session.server_id not in self.sessions:
+            await self._on_lost(session)
 
     async def _dispatch(self, session: Session, env: Envelope) -> None:
         if not env.known:
@@ -250,3 +264,6 @@ class Gateway:
     async def _stop_watchdog(self, app: web.Application) -> None:
         if self._watchdog:
             self._watchdog.cancel()
+        for task in self._pending_lost.values():
+            task.cancel()
+        self._pending_lost.clear()
