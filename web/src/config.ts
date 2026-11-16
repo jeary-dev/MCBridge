@@ -10,6 +10,8 @@ export const DOWNLOAD_URL = "https://github.com/jeary-dev/MCBridge/releases/late
 
 export const GITHUB_URL = "https://github.com/jeary-dev/MCBridge";
 
+export const SUPPORT_URL = "https://discord.gg/HA8scCCJXB";
+
 export const CONTACT_EMAIL = "contact@mcbridge.dev";
 
 export const SITE_URL = "https://mcbridge.dev";

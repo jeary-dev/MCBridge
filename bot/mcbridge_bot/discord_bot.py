@@ -84,11 +84,32 @@ class MCBridgeBot(commands.Bot):
             log.info("slash commands synced globally (can take a while to show up)")
         self.status_loop.start()
         self.recap_loop.start()
+        self.presence_loop.start()
 
     async def on_ready(self) -> None:
         log.info("logged in as %s, in %d Discord servers", self.user, len(self.guilds))
-        await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching,
-                                                             name="Minecraft servers | mcbridge.dev"))
+        self._presence = None
+        await self.update_presence()
+
+    def presence_text(self) -> str:
+        online = len(self.gateway.sessions)
+        if online == 0:
+            return "Your Minecraft server, live in Discord · mcbridge.dev"
+        return f"Watching {online} Minecraft server{'s' if online != 1 else ''} · mcbridge.dev"
+
+    async def update_presence(self) -> None:
+        text = self.presence_text()
+        if text != getattr(self, "_presence", None):
+            self._presence = text
+            await self.change_presence(activity=discord.CustomActivity(name=text))
+
+    @tasks.loop(minutes=5)
+    async def presence_loop(self) -> None:
+        await self.update_presence()
+
+    @presence_loop.before_loop
+    async def _before_presence_loop(self) -> None:
+        await self.wait_until_ready()
 
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         original = getattr(error, "original", error)

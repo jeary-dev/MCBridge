@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CONTACT_EMAIL, DOWNLOAD_URL, GITHUB_URL, INVITE_URL } from "@/config";
+import { CONTACT_EMAIL, DOWNLOAD_URL, GITHUB_URL, INVITE_URL, SUPPORT_URL } from "@/config";
 import { Logo } from "./Logo";
 
 type FooterLink = { href: string; label: string };
@@ -18,6 +18,7 @@ const COLUMNS: { title: string; links: FooterLink[] }[] = [
     title: "Project",
     links: [
       { href: GITHUB_URL, label: "GitHub" },
+      { href: SUPPORT_URL, label: "Support server" },
       { href: `${GITHUB_URL}/blob/main/LICENSE`, label: "AGPL-3.0 license" },
       { href: `mailto:${CONTACT_EMAIL}`, label: CONTACT_EMAIL },
     ],
