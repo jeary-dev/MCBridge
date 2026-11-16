@@ -147,12 +147,64 @@ VALIDATORS: dict[str, Callable[[dict], None]] = {
                                 _require_choice(d, "action", {"add", "remove"}),
                                 _require_text(d, "player_name", 16)),
     "event.link_request": lambda d: (_v_player_only(d), _require_text(d, "code", 12)),
+    "event.console": lambda d: _v_console_lines(d),
+    "event.player_groups": lambda d: (_v_player_only(d), _v_string_list(d, "groups", 200),
+                                      _optional_choice(d, "reason", {"join", "change"})),
     "cmd.console": lambda d: _v_console(d),
     "cmd.diagnostics": lambda d: Actor.from_dict(_require(d, "actor", dict)),
+    "cmd.moderate": lambda d: _v_moderate(d),
+    "cmd.tab_complete": lambda d: (Actor.from_dict(_require(d, "actor", dict)), _v_max_len(d, "command", MAX_CONSOLE_LEN)),
+    "cmd.player_stats": lambda d: (Actor.from_dict(_require(d, "actor", dict)), _require_text(d, "player_name", 16)),
+    "cmd.inventory": lambda d: (Actor.from_dict(_require(d, "actor", dict)), _require_text(d, "player_name", 16)),
+    "cmd.message": lambda d: (Actor.from_dict(_require(d, "actor", dict)), _require_text(d, "player_name", 16),
+                              _require_text(d, "message", MAX_CHAT_LEN)),
+    "cmd.set_groups": lambda d: (_require(d, "player_uuid", str), _v_string_list(d, "add", 50),
+                                 _v_string_list(d, "remove", 50)),
+    "cmd.set_features": lambda d: _require(d, "console_stream", bool),
     "cmd.link_result": lambda d: (_require(d, "player_uuid", str), _require(d, "ok", bool),
                                   _require_text(d, "message", 256)),
     "reply": lambda d: _v_reply(d),
 }
+
+
+MODERATION_ACTIONS = {"kick", "ban", "unban", "op", "deop", "gamemode"}
+GAMEMODES = {"survival", "creative", "adventure", "spectator"}
+MAX_CONSOLE_LINES = 200
+
+
+def _v_moderate(d):
+    Actor.from_dict(_require(d, "actor", dict))
+    action = _require_choice(d, "action", MODERATION_ACTIONS)
+    _require_text(d, "player_name", 16)
+    if "reason" in d and d["reason"] is not None:
+        _v_max_len(d, "reason", 200)
+    if action == "gamemode":
+        _require_choice(d, "gamemode", GAMEMODES)
+
+
+def _v_max_len(d, key, max_len):
+    value = _require(d, key, str)
+    if len(value) > max_len:
+        raise ProtocolError(f"field '{key}' is longer than {max_len} characters")
+    return value
+
+
+def _v_string_list(d, key, max_items):
+    items = _require(d, key, list)
+    if len(items) > max_items or not all(isinstance(i, str) and len(i) <= 100 for i in items):
+        raise ProtocolError(f"field '{key}' must be a list of up to {max_items} short strings")
+    return items
+
+
+def _optional_choice(d, key, choices):
+    if key in d and d[key] is not None:
+        _require_choice(d, key, choices)
+
+
+def _v_console_lines(d):
+    lines = _require(d, "lines", list)
+    if len(lines) > MAX_CONSOLE_LINES or not all(isinstance(line, str) and len(line) <= 4000 for line in lines):
+        raise ProtocolError("lines must be a list of up to 200 strings")
 
 
 def _v_console(d):

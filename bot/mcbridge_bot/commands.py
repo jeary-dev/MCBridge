@@ -12,6 +12,7 @@ from . import embeds, views
 from .discord_bot import UserError, actor_of
 from .gateway import CommandFailed, Session
 from .protocol import command
+from .sync import DIRECTIONS
 from .store import LINK_CODE_TTL_S, ServerRecord
 
 if TYPE_CHECKING:
@@ -21,6 +22,10 @@ if TYPE_CHECKING:
 class MCBridgeCommands(commands.Cog):
     account = app_commands.Group(name="account", description="Link your Discord to your Minecraft account",
                                  guild_only=True)
+    mod = app_commands.Group(name="mod", description="Moderate players on your Minecraft server", guild_only=True,
+                             default_permissions=discord.Permissions(manage_guild=True))
+    rolesync = app_commands.Group(name="rolesync", description="Link permission groups to Discord roles",
+                                  guild_only=True, default_permissions=discord.Permissions(manage_guild=True))
 
     def __init__(self, bot: "MCBridgeBot"):
         self.bot = bot
@@ -44,7 +49,7 @@ class MCBridgeCommands(commands.Cog):
         if session is None:
             raise UserError(f"**{embeds.safe(record.name)}** is offline right now.")
         if capability and capability not in session.capabilities:
-            if capability in ("diagnostics", "link"):
+            if capability in ("diagnostics", "link", "stats", "inventory", "message"):
                 raise UserError(f"**{embeds.safe(record.name)}** needs a newer MCBridge plugin for that. "
                                 "Ask the server owner to update it.")
             raise UserError(f"**{embeds.safe(record.name)}** doesn't allow `{capability}`. The server owner can "
@@ -76,13 +81,16 @@ class MCBridgeCommands(commands.Cog):
                           description="Your Minecraft server, live in Discord.")
         e.add_field(name="Everyone", inline=False,
                     value="`/status` live stats and graph\n`/player` playtime and last seen\n"
+                          "`/stats` Minecraft statistics\n`/inventory` what a player is carrying\n"
                           "`/top` most active players\n`/whitelist-request` ask to join\n"
                           "`/account link` link your Minecraft account")
         e.add_field(name="Staff", inline=False,
                     value="`/setup` link a server\n`/settings` channels, roles, recap, live status\n"
                           "`/lag` what's causing lag right now\n`/recap` the last 24 hours\n"
-                          "`/whitelist` add or remove players\n`/console` run a console command\n"
-                          "`/audit` who did what\n`/unlink` disconnect a server")
+                          "`/mod` kick, ban, unban, op, deop, gamemode\n`/msg` message a player\n"
+                          "`/whitelist` add or remove players\n`/rolesync` link groups to roles\n"
+                          "`/console` run a console command\n`/audit` who did what\n`/unlink` disconnect a server")
+        e.set_footer(text="Full guide: mcbridge.dev/docs")
         await interaction.response.send_message(embed=e, ephemeral=True)
 
     @app_commands.guild_only()
@@ -308,10 +316,33 @@ class MCBridgeCommands(commands.Cog):
             self.audit(interaction, record.server_id, f"whitelist_{action}", player, e.code)
             await interaction.followup.send(f"❌ {embeds.safe(e.message)}", ephemeral=True)
 
+    async def console_autocomplete(self, interaction: discord.Interaction, current: str):
+        if not interaction.user.guild_permissions.administrator:
+            return []
+        try:
+            record = self.resolve(interaction, getattr(interaction.namespace, "server", None))
+        except UserError:
+            return []
+        session = self.bot.gateway.sessions.get(record.server_id)
+        if session is None or "console" not in session.capabilities:
+            return []
+        text = current.lstrip("/")
+        try:
+            reply = await session.command(command("cmd.tab_complete", actor_of(interaction.user), command=text),
+                                          timeout=2.0)
+        except CommandFailed:
+            return []
+        base = text.rsplit(" ", 1)[0] + " " if " " in text else ""
+        out = []
+        for suggestion in (reply.get("data") or {}).get("suggestions", [])[:25]:
+            full = (base + suggestion)[:100]
+            out.append(app_commands.Choice(name=full, value=full))
+        return out
+
     @app_commands.guild_only()
     @app_commands.command(name="console", description="Run a console command on the server (admins only)")
     @app_commands.describe(cmd="The command, without a leading /", server="Which server")
-    @app_commands.autocomplete(server=server_autocomplete)
+    @app_commands.autocomplete(server=server_autocomplete, cmd=console_autocomplete)
     @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def console(self, interaction: discord.Interaction, cmd: app_commands.Range[str, 1, 1000],
@@ -345,6 +376,168 @@ class MCBridgeCommands(commands.Cog):
                  for e in entries]
         await interaction.response.send_message(
             embed=discord.Embed(title="Audit log", description="\n".join(lines), color=embeds.GREY), ephemeral=True)
+
+
+    async def run_moderation(self, interaction: discord.Interaction, server: str | None, action: str, player: str,
+                             reason: str | None = None, gamemode: str | None = None):
+        record = self.resolve(interaction, server)
+        if not views.PLAYER_NAME.match(player):
+            raise UserError("That isn't a valid Minecraft username.")
+        session = self.session(record, "moderation")
+        await interaction.response.defer(ephemeral=True)
+        fields = {"action": action, "player_name": player}
+        if reason:
+            fields["reason"] = reason.replace("\n", " ")[:200]
+        if gamemode:
+            fields["gamemode"] = gamemode
+        detail = f"{player}" + (f" ({gamemode})" if gamemode else "") + (f": {fields['reason']}" if reason else "")
+        try:
+            reply = await session.command(command("cmd.moderate", actor_of(interaction.user), **fields))
+            self.audit(interaction, record.server_id, f"mod_{action}", detail, "ok")
+            await interaction.followup.send(f"✅ {embeds.safe(reply.get('result') or 'Done')}", ephemeral=True)
+        except CommandFailed as e:
+            self.audit(interaction, record.server_id, f"mod_{action}", detail, e.code)
+            await interaction.followup.send(f"❌ {embeds.safe(e.message)}", ephemeral=True)
+
+    @mod.command(name="kick", description="Kick an online player")
+    @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def mod_kick(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
+                       reason: app_commands.Range[str, 0, 200] | None = None, server: str | None = None):
+        await self.run_moderation(interaction, server, "kick", player, reason)
+
+    @mod.command(name="ban", description="Ban a player")
+    @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def mod_ban(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
+                      reason: app_commands.Range[str, 0, 200] | None = None, server: str | None = None):
+        await self.run_moderation(interaction, server, "ban", player, reason)
+
+    @mod.command(name="unban", description="Unban a player")
+    @app_commands.autocomplete(server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def mod_unban(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
+                        server: str | None = None):
+        await self.run_moderation(interaction, server, "unban", player)
+
+    @mod.command(name="op", description="Make a player an operator")
+    @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def mod_op(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
+                     server: str | None = None):
+        await self.run_moderation(interaction, server, "op", player)
+
+    @mod.command(name="deop", description="Remove a player's operator status")
+    @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def mod_deop(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
+                       server: str | None = None):
+        await self.run_moderation(interaction, server, "deop", player)
+
+    @mod.command(name="gamemode", description="Change a player's game mode")
+    @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def mod_gamemode(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
+                           mode: Literal["survival", "creative", "adventure", "spectator"], server: str | None = None):
+        await self.run_moderation(interaction, server, "gamemode", player, gamemode=mode)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="msg", description="Send a private message to an online player")
+    @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def msg(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
+                  message: app_commands.Range[str, 1, 256], server: str | None = None):
+        record = self.resolve(interaction, server)
+        session = self.session(record, "chat")
+        if "message" not in session.capabilities:
+            raise UserError(f"**{embeds.safe(record.name)}** needs a newer MCBridge plugin for that. "
+                            "Ask the server owner to update it.")
+        await interaction.response.defer(ephemeral=True)
+        try:
+            reply = await session.command(command("cmd.message", actor_of(interaction.user), player_name=player,
+                                                  message=message.replace("\n", " ")))
+            self.audit(interaction, record.server_id, "msg", f"{player}: {message[:80]}", "ok")
+            await interaction.followup.send(f"✅ {embeds.safe(reply.get('result') or 'Sent')}", ephemeral=True)
+        except CommandFailed as e:
+            await interaction.followup.send(f"❌ {embeds.safe(e.message)}", ephemeral=True)
+
+    @app_commands.guild_only()
+    @app_commands.command(name="stats", description="Minecraft statistics for a player: kills, deaths, distance and more")
+    @app_commands.autocomplete(name=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.cooldown(1, 5)
+    async def stats(self, interaction: discord.Interaction, name: app_commands.Range[str, 3, 16],
+                    server: str | None = None):
+        record = self.resolve(interaction, server)
+        session = self.session(record, "stats")
+        await interaction.response.defer()
+        try:
+            reply = await session.command(command("cmd.player_stats", actor_of(interaction.user), player_name=name))
+        except CommandFailed as e:
+            raise UserError(e.message)
+        await interaction.followup.send(embed=embeds.stats_embed(record.name, reply.get("data") or {}))
+
+    @app_commands.guild_only()
+    @app_commands.command(name="inventory", description="What an online player is carrying")
+    @app_commands.autocomplete(player=player_autocomplete, server=server_autocomplete)
+    @app_commands.checks.cooldown(1, 5)
+    async def inventory(self, interaction: discord.Interaction, player: app_commands.Range[str, 3, 16],
+                        server: str | None = None):
+        record = self.resolve(interaction, server)
+        session = self.session(record, "inventory")
+        await interaction.response.defer()
+        try:
+            reply = await session.command(command("cmd.inventory", actor_of(interaction.user), player_name=player))
+        except CommandFailed as e:
+            raise UserError(e.message)
+        await interaction.followup.send(embed=embeds.inventory_embed(record.name, reply.get("data") or {}))
+
+    @rolesync.command(name="add", description="Link a permission group (LuckPerms or Vault) to a Discord role")
+    @app_commands.describe(group="The permission group name, e.g. vip", role="The Discord role",
+                           direction="Which way changes are copied")
+    @app_commands.autocomplete(server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def rolesync_add(self, interaction: discord.Interaction, group: app_commands.Range[str, 1, 64],
+                           role: discord.Role,
+                           direction: Literal["both", "minecraft-to-discord", "discord-to-minecraft"] = "both",
+                           server: str | None = None):
+        record = self.resolve(interaction, server)
+        if direction not in DIRECTIONS:
+            raise UserError("Unknown direction.")
+        if role.managed or role.is_default():
+            raise UserError("That role can't be given out.")
+        if role >= interaction.guild.me.top_role:
+            raise UserError(f"I can't manage {role.mention}: move my role above it in Server Settings → Roles.")
+        self.store.set_role_link(record.server_id, group.strip(), str(role.id), direction)
+        self.audit(interaction, record.server_id, "rolesync_add", f"{group} {direction} @{role.name}")
+        note = ""
+        session = self.bot.gateway.sessions.get(record.server_id)
+        if session is not None and "roles" not in session.capabilities:
+            note = ("\n⚠️ The server isn't reporting LuckPerms or Vault yet. Install one, update MCBridge, and make "
+                    "sure `allow.roles: true`.")
+        await interaction.response.send_message(
+            embed=embeds.rolesync_embed(record.name, self.store.role_links(record.server_id)),
+            content=f"✅ Linked `{embeds.safe(group)}` and {role.mention}. Players sync when they next join.{note}",
+            ephemeral=True)
+
+    @rolesync.command(name="remove", description="Remove a role link")
+    @app_commands.autocomplete(server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def rolesync_remove(self, interaction: discord.Interaction, group: app_commands.Range[str, 1, 64],
+                              server: str | None = None):
+        record = self.resolve(interaction, server)
+        if not self.store.remove_role_link(record.server_id, group.strip()):
+            raise UserError(f"`{embeds.safe(group)}` isn't linked. See `/rolesync list`.")
+        self.audit(interaction, record.server_id, "rolesync_remove", group)
+        await interaction.response.send_message(f"✅ Removed the link for `{embeds.safe(group)}`.", ephemeral=True)
+
+    @rolesync.command(name="list", description="Show every role link")
+    @app_commands.autocomplete(server=server_autocomplete)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def rolesync_list(self, interaction: discord.Interaction, server: str | None = None):
+        record = self.resolve(interaction, server)
+        await interaction.response.send_message(
+            embed=embeds.rolesync_embed(record.name, self.store.role_links(record.server_id)), ephemeral=True)
 
 
 class ConfirmUnlink(discord.ui.View):

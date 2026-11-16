@@ -60,7 +60,7 @@ final class UpdateNotifier implements Listener {
         Release r = latest;
         if (r == null) return;
         Component message = plugin.messages().prefixed("update-available",
-                        text("current", current), text("latest", r.version()))
+                text("current", current), text("latest", r.version()))
                 .clickEvent(ClickEvent.openUrl(r.url()))
                 .hoverEvent(HoverEvent.showText(Component.text("Open " + r.url())));
         to.sendMessage(message);

@@ -138,7 +138,6 @@ def activity_chart(samples: list[dict], start: int, end: int, *, max_players: in
 
 
 def bucket(samples: list[dict], size: int) -> list[dict]:
-    """Squash per-minute samples into bigger buckets: busiest player count, worst TPS."""
     out: dict[int, dict] = {}
     for s in samples:
         key = s["ts"] - s["ts"] % size

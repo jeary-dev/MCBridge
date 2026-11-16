@@ -1,6 +1,7 @@
 package czr.mcbridge;
 
 import com.destroystokyo.paper.profile.PlayerProfile;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import czr.mcbridge.core.CommandHandler;
 import czr.mcbridge.core.Envelope;
@@ -12,6 +13,9 @@ import org.bukkit.OfflinePlayer;
 import org.bukkit.command.CommandSender;
 import org.bukkit.entity.Player;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.function.Supplier;
@@ -41,6 +45,13 @@ final class PaperCommandHandler implements CommandHandler {
             case "cmd.console" -> console(cmd.data());
             case "cmd.diagnostics" -> onMainThread(Diagnostics::collect);
             case "cmd.link_result" -> linkResult(cmd.data());
+            case "cmd.moderate" -> moderate(cmd.data());
+            case "cmd.tab_complete" -> tabComplete(cmd.data());
+            case "cmd.player_stats" -> playerLookup(cmd.data(), true);
+            case "cmd.inventory" -> playerLookup(cmd.data(), false);
+            case "cmd.message" -> message(cmd.data());
+            case "cmd.set_features" -> setFeatures(cmd.data());
+            case "cmd.set_groups" -> setGroups(cmd.data());
             default -> done(Replies.error(ErrorCode.UNKNOWN_COMMAND, "Unknown command " + cmd.type()));
         };
     }
@@ -133,6 +144,140 @@ final class PaperCommandHandler implements CommandHandler {
                     Messages.text("message", message));
             return Replies.ok("sent");
         });
+    }
+
+    private static final Set<String> GAMEMODES = Set.of("survival", "creative", "adventure", "spectator");
+
+    private CompletableFuture<JsonObject> moderate(JsonObject data) {
+        if (!plugin.allowed("moderation")) return forbidden("moderation");
+        String action = Envelope.str(data, "action");
+        String name = Envelope.str(data, "player_name");
+        if (name == null || !PLAYER_NAME.matcher(name).matches()) {
+            return done(Replies.error(ErrorCode.INVALID, "not a valid Minecraft username"));
+        }
+        String actor = actorName(data);
+        String reason = Envelope.str(data, "reason");
+        reason = reason == null || reason.isBlank() ? null : reason.replaceAll("[\\p{Cntrl}]", " ").strip();
+        if (reason != null && reason.length() > 200) reason = reason.substring(0, 200);
+        String why = reason != null ? reason : "By " + actor + " via Discord";
+        String gamemode = Envelope.str(data, "gamemode");
+        String command;
+        switch (action == null ? "" : action) {
+            case "kick" -> command = "kick " + name + " " + why;
+            case "ban" -> command = "ban " + name + " " + why;
+            case "unban" -> command = "pardon " + name;
+            case "op" -> command = "op " + name;
+            case "deop" -> command = "deop " + name;
+            case "gamemode" -> {
+                if (gamemode == null || !GAMEMODES.contains(gamemode)) {
+                    return done(Replies.error(ErrorCode.INVALID, "unknown game mode"));
+                }
+                command = "gamemode " + gamemode + " " + name;
+            }
+            default -> {
+                return done(Replies.error(ErrorCode.INVALID, "unknown moderation action"));
+            }
+        }
+        String finalCommand = command;
+        return onMainThread(() -> {
+            if ((action.equals("kick") || action.equals("gamemode")) && Bukkit.getPlayerExact(name) == null) {
+                return Replies.error(ErrorCode.PLAYER_NOT_FOUND, name + " isn't online");
+            }
+            plugin.getLogger().info("[Discord moderation] " + actor + ": " + finalCommand);
+            StringBuilder output = new StringBuilder();
+            CommandSender sender = Bukkit.createCommandSender(
+                    feedback -> output.append(MCBridge.plain(feedback)).append('\n'));
+            Bukkit.dispatchCommand(sender, finalCommand);
+            String result = output.toString().strip();
+            return Replies.ok(result.isEmpty() ? "Done" : result);
+        });
+    }
+
+    private CompletableFuture<JsonObject> tabComplete(JsonObject data) {
+        if (!plugin.allowed("console")) return forbidden("console");
+        String text = Envelope.str(data, "command");
+        if (text == null || text.length() > MAX_CONSOLE) return done(Replies.error(ErrorCode.INVALID, "bad command"));
+        String line = text.startsWith("/") ? text.substring(1) : text;
+        return onMainThread(() -> {
+            List<String> found;
+            if (!line.contains(" ")) {
+                found = new ArrayList<>();
+                for (String known : Bukkit.getCommandMap().getKnownCommands().keySet()) {
+                    if (!known.contains(":") && known.startsWith(line.toLowerCase())) found.add(known);
+                }
+                found.sort(String::compareTo);
+            } else {
+                List<String> raw = Bukkit.getCommandMap().tabComplete(Bukkit.getConsoleSender(), line);
+                found = raw == null ? List.of() : raw;
+            }
+            JsonArray suggestions = new JsonArray();
+            found.stream().limit(25).forEach(suggestions::add);
+            JsonObject out = new JsonObject();
+            out.add("suggestions", suggestions);
+            return Replies.ok("", out);
+        });
+    }
+
+    private CompletableFuture<JsonObject> playerLookup(JsonObject data, boolean stats) {
+        String name = Envelope.str(data, "player_name");
+        if (name == null || !PLAYER_NAME.matcher(name).matches()) {
+            return done(Replies.error(ErrorCode.INVALID, "not a valid Minecraft username"));
+        }
+        return onMainThread(() -> stats ? PlayerInfo.stats(name) : PlayerInfo.inventory(name));
+    }
+
+    private CompletableFuture<JsonObject> message(JsonObject data) {
+        if (!plugin.allowed("chat")) return forbidden("chat");
+        String name = Envelope.str(data, "player_name");
+        String message = Envelope.str(data, "message");
+        String author = actorName(data);
+        if (name == null || message == null || message.isBlank() || message.length() > MAX_CHAT || author == null) {
+            return done(Replies.error(ErrorCode.INVALID, "missing or bad player/message"));
+        }
+        return onMainThread(() -> {
+            Player player = Bukkit.getPlayerExact(name);
+            if (player == null) return Replies.error(ErrorCode.PLAYER_NOT_FOUND, name + " isn't online");
+            player.sendMessage(plugin.messages().render("private-message",
+                    Messages.text("author", author), Messages.text("message", message)));
+            return Replies.ok("Sent to " + player.getName());
+        });
+    }
+
+    private CompletableFuture<JsonObject> setFeatures(JsonObject data) {
+        boolean stream = data.has("console_stream") && data.get("console_stream").isJsonPrimitive()
+                && data.get("console_stream").getAsBoolean();
+        return onMainThread(() -> {
+            plugin.setConsoleStream(stream && plugin.allowed("console"));
+            return Replies.ok("ok");
+        });
+    }
+
+    private CompletableFuture<JsonObject> setGroups(JsonObject data) {
+        if (!plugin.allowed("roles", true) || plugin.permissions() == null) return forbidden("roles");
+        String uuid = Envelope.str(data, "player_uuid");
+        UUID id;
+        try {
+            id = UUID.fromString(uuid == null ? "" : uuid);
+        } catch (IllegalArgumentException e) {
+            return done(Replies.error(ErrorCode.INVALID, "bad player_uuid"));
+        }
+        List<String> add = strings(data, "add");
+        List<String> remove = strings(data, "remove");
+        return onMainThread(() -> {
+            for (String g : remove) plugin.permissions().removeGroup(id, g);
+            for (String g : add) plugin.permissions().addGroup(id, g);
+            return Replies.ok("ok");
+        });
+    }
+
+    private static List<String> strings(JsonObject data, String key) {
+        List<String> out = new ArrayList<>();
+        if (data.has(key) && data.get(key).isJsonArray()) {
+            data.getAsJsonArray(key).forEach(e -> {
+                if (e.isJsonPrimitive() && e.getAsString().matches("[A-Za-z0-9_.-]{1,64}")) out.add(e.getAsString());
+            });
+        }
+        return out;
     }
 
     private CompletableFuture<JsonObject> onMainThread(Supplier<JsonObject> work) {

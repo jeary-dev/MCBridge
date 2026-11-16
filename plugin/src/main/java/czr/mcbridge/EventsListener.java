@@ -36,12 +36,14 @@ final class EventsListener implements Listener {
         data.add("player", MCBridge.player(p));
         data.addProperty("first_join", !p.hasPlayedBefore());
         plugin.sendEvent("event.player_join", data);
+        plugin.sendGroups(p, "join");
     }
 
     @EventHandler(priority = EventPriority.MONITOR)
     public void onQuit(PlayerQuitEvent event) {
         Player p = event.getPlayer();
         Long since = joinedAt.remove(p.getUniqueId());
+        plugin.forgetGroups(p);
 
         String reason = "quit";
         if (event.getReason() == PlayerQuitEvent.QuitReason.KICKED) {

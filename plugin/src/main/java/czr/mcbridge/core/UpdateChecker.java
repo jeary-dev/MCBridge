@@ -20,7 +20,6 @@ public final class UpdateChecker {
 
     private UpdateChecker() {}
 
-    /** Completes with the newer release, or empty if we're up to date (or GitHub couldn't be reached). */
     public static CompletableFuture<Optional<Release>> check(String currentVersion) {
         HttpRequest request = HttpRequest.newBuilder(URI.create(LATEST_RELEASE))
                 .timeout(Duration.ofSeconds(10))
@@ -53,7 +52,6 @@ public final class UpdateChecker {
         }
     }
 
-    /** True if {@code candidate} is a higher version than {@code current}, e.g. 0.2.10 > 0.2.9. */
     public static boolean isNewer(String candidate, String current) {
         int[] a = numbers(candidate);
         int[] b = numbers(current);

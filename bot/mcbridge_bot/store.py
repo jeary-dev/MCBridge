@@ -124,6 +124,14 @@ CREATE TABLE IF NOT EXISTS whitelist_requests (
     message_id  TEXT
 );
 
+CREATE TABLE IF NOT EXISTS role_links (
+    server_id   TEXT NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
+    group_name  TEXT NOT NULL,
+    role_id     TEXT NOT NULL,
+    direction   TEXT NOT NULL,
+    PRIMARY KEY (server_id, group_name)
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          INTEGER NOT NULL,
@@ -468,6 +476,22 @@ class Store:
         self.db.execute("UPDATE whitelist_requests SET status = 'pending', decided_by = NULL WHERE id = ?",
                         (request_id,))
         self.db.commit()
+
+    def set_role_link(self, server_id: str, group: str, role_id: str, direction: str) -> None:
+        self.db.execute("INSERT OR REPLACE INTO role_links (server_id, group_name, role_id, direction) VALUES (?,?,?,?)",
+                        (server_id, group.lower(), role_id, direction))
+        self.db.commit()
+
+    def remove_role_link(self, server_id: str, group: str) -> bool:
+        cur = self.db.execute("DELETE FROM role_links WHERE server_id = ? AND group_name = ?",
+                              (server_id, group.lower()))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def role_links(self, server_id: str) -> list[dict]:
+        rows = self.db.execute("SELECT group_name, role_id, direction FROM role_links WHERE server_id = ? "
+                               "ORDER BY group_name", (server_id,))
+        return [dict(r) for r in rows]
 
     def audit(self, guild_id: str, server_id: str | None, actor_id: str, actor_name: str,
               action: str, detail: str = "", result: str = "") -> None:

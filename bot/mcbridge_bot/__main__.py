@@ -31,6 +31,7 @@ async def _mcping_check(address: str) -> bool:
 async def run(settings: Settings, with_discord: bool) -> None:
     store = Store(settings.db_path)
     gateway = Gateway(store, ping_check=_mcping_check, trust_cloudflare=settings.trust_cloudflare)
+    gateway.demo_origins = settings.demo_origins
 
     if not with_discord:
         @gateway.on

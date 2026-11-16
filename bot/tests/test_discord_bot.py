@@ -55,14 +55,17 @@ def test_slash_commands_are_registered_with_permissions():
         await bot.add_cog(MCBridgeCommands(bot))
         cmds = {c.name: c for c in bot.tree.get_commands()}
         assert set(cmds) == {"help", "setup", "settings", "servers", "status", "player", "top", "lag", "recap",
-                             "whitelist-request", "account", "unlink", "whitelist", "console", "audit"}
+                             "whitelist-request", "account", "unlink", "whitelist", "console", "audit",
+                             "mod", "msg", "stats", "inventory", "rolesync"}
         assert all(c.guild_only for c in cmds.values())
         assert cmds["console"].default_permissions.administrator
-        for staff in ("setup", "settings", "lag", "recap", "unlink", "whitelist", "audit"):
+        for staff in ("setup", "settings", "lag", "recap", "unlink", "whitelist", "audit", "mod", "msg", "rolesync"):
             assert cmds[staff].default_permissions.manage_guild, staff
-        for everyone in ("status", "player", "top", "whitelist-request", "account"):
+        for everyone in ("status", "player", "top", "whitelist-request", "account", "stats", "inventory"):
             assert cmds[everyone].default_permissions is None, everyone
         assert {c.name for c in cmds["account"].commands} == {"link", "unlink"}
+        assert {c.name for c in cmds["mod"].commands} == {"kick", "ban", "unban", "op", "deop", "gamemode"}
+        assert {c.name for c in cmds["rolesync"].commands} == {"add", "remove", "list"}
         for c in cmds.values():
             c.to_dict(bot.tree)
     asyncio.run(go())
@@ -173,3 +176,103 @@ def test_status_card_has_icon_and_chart():
     assert {f.filename for f in files} == {"icon.png", "activity.png"}
     assert "play.example.com" in embed.description and "Offline" in embed.description
     assert embed.image.url == "attachment://activity.png"
+
+
+def test_presence_text_counts_online_servers():
+    store = Store(":memory:")
+    gw = Gateway(store)
+    bot = MCBridgeBot(store, gw, SETTINGS)
+    assert bot.presence_text() == "Your Minecraft server, live in Discord · mcbridge.dev"
+    gw.sessions["a"] = object()
+    assert bot.presence_text() == "Watching 1 Minecraft server · mcbridge.dev"
+    gw.sessions["b"] = object()
+    assert bot.presence_text() == "Watching 2 Minecraft servers · mcbridge.dev"
+
+
+def test_health_problem_before_login():
+    store = Store(":memory:")
+    gw = Gateway(store)
+    MCBridgeBot(store, gw, SETTINGS)
+    assert gw.health_check() == "not connected to discord yet"
+
+
+def test_console_stream_filters_and_demo():
+    import dataclasses
+
+    async def go():
+        store = Store(":memory:")
+        gw = Gateway(store, silence_timeout_s=60, lost_grace_s=0)
+        rec, token = store.create_server("111", "Demo SMP")
+        settings = dataclasses.replace(SETTINGS, demo_server_id=rec.server_id)
+        bot = MCBridgeBot(store, gw, settings)
+        channels = {"alerts": FakeChannel(), "chat": FakeChannel(), "feed": FakeChannel(), "console": FakeChannel()}
+
+        async def channel_for(record, kind):
+            return channels.get(kind)
+
+        async def ready():
+            return None
+
+        bot.channel_for = channel_for
+        bot.wait_until_ready = ready
+        gw.demo_origins = ("https://mcbridge.dev",)
+        store.set_channel(rec.server_id, "console", "999")
+        store.set_setting(rec.server_id, "feed_off", "leave")
+        store.set_setting(rec.server_id, "chat_filter", "badword")
+        client = TestClient(TestServer(gw.make_app()))
+        await client.start_server()
+        try:
+            assert (await client.get("/v1/demo")).status == 200
+            hello = dict(HELLO, capabilities=["chat", "console", "console_stream"])
+            ws = await client.ws_connect("/v1/plugin", headers={"Authorization": f"Bearer {token}"})
+            await ws.send_str(Envelope(type="hello", data=hello).to_json())
+            await ws.receive()
+            feature = Envelope.from_json((await ws.receive()).data)
+            assert feature.type == "cmd.set_features" and feature.data == {"console_stream": True}
+            await ws.send_str(reply_ok(feature).to_json())
+
+            p = {"uuid": "u", "name": "czrbyn"}
+            await ws.send_str(Envelope(type="event.console", data={
+                "lines": ["[12:00:01 INFO]: czrbyn[/10.0.0.5:5555] logged in", "Done (3.2s)!"]}).to_json())
+            await ws.send_str(Envelope(type="event.player_chat", data={"player": p, "message": "a BADWORD here"}).to_json())
+            await ws.send_str(Envelope(type="event.player_chat", data={"player": p, "message": "hello"}).to_json())
+            await ws.send_str(Envelope(type="event.player_join", data={"player": p, "first_join": False}).to_json())
+            await ws.send_str(Envelope(type="event.player_leave",
+                                       data={"player": p, "reason": "quit", "session_s": 5}).to_json())
+            await ws.send_str(Envelope(type="heartbeat", data=heartbeat(20.0, [p])).to_json())
+            for _ in range(20):
+                await asyncio.sleep(0.02)
+
+            await type(bot).console_loop.coro(bot)
+            console_text = ch_text = "".join(c for c, _ in channels["console"].sent)
+            assert "logged in" in console_text and "10.0.0.5" not in console_text and "[IP hidden]" in console_text
+            ch_text = [c for c, _ in channels["chat"].sent]
+            assert len(ch_text) == 1 and "hello" in ch_text[0]
+            feed = [e.description for _, e in channels["feed"].sent]
+            assert len(feed) == 1 and "joined" in feed[0]
+
+            resp = await client.get("/v1/demo", headers={"Origin": "https://mcbridge.dev"})
+            assert resp.headers["Access-Control-Allow-Origin"] == "https://mcbridge.dev"
+            demo = await resp.json()
+            assert demo["online"] and demo["name"] == "Demo SMP" and demo["players"]["online"] == 1
+            assert [e["type"] for e in demo["events"]] == ["chat", "join", "leave"]
+            evil = await client.get("/v1/demo", headers={"Origin": "https://evil.example"})
+            assert "Access-Control-Allow-Origin" not in evil.headers
+            await ws.close()
+        finally:
+            await client.close()
+    asyncio.run(go())
+
+
+def test_demo_404_without_config():
+    async def go():
+        store = Store(":memory:")
+        gw = Gateway(store)
+        MCBridgeBot(store, gw, SETTINGS)
+        client = TestClient(TestServer(gw.make_app()))
+        await client.start_server()
+        try:
+            assert (await client.get("/v1/demo")).status == 404
+        finally:
+            await client.close()
+    asyncio.run(go())

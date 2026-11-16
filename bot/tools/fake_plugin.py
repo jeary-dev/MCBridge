@@ -14,6 +14,7 @@ import argparse
 import asyncio
 import random
 import sys
+import time
 from pathlib import Path
 
 import aiohttp
@@ -25,6 +26,21 @@ PLAYERS = [{"uuid": "f759806f-e772-4945-8b79-c19266849be4", "name": "czrbyn"},
            {"uuid": "00000000-0000-4000-8000-000000000001", "name": "Steve"}]
 
 
+FAKE_STATS = {"play_time_ticks": 20 * 60 * 60 * 37, "deaths": 12, "mob_kills": 845, "player_kills": 3,
+              "blocks_mined": 21456, "distance_cm": 412_345_00, "jumps": 9120, "damage_dealt": 30120,
+              "damage_taken": 8800, "fish_caught": 41, "animals_bred": 77, "villager_trades": 15, "items_enchanted": 9}
+FAKE_INVENTORY = {
+    "armor": [{"type": "diamond_helmet", "amount": 1, "enchantments": [{"id": "protection", "level": 4}]},
+              {"type": "netherite_chestplate", "amount": 1, "durability": 512, "max_durability": 592}, None,
+              {"type": "iron_boots", "amount": 1}],
+    "offhand": {"type": "shield", "amount": 1},
+    "hotbar": [{"type": "netherite_sword", "amount": 1, "name": "Excalibur",
+                "enchantments": [{"id": "sharpness", "level": 5}, {"id": "looting", "level": 3}]},
+               {"type": "bow", "amount": 1}, None, {"type": "cooked_beef", "amount": 48}, None, None, None, None,
+               {"type": "torch", "amount": 64}],
+    "main": [{"type": "cobblestone", "amount": 64}, {"type": "oak_log", "amount": 32}, None,
+             {"type": "diamond", "amount": 7}],
+}
 FAKE_DIAGNOSTICS = {
     "worlds": [{"name": "world", "chunks": 1840, "entities": 4210, "tile_entities": 960, "players": 2},
                {"name": "world_nether", "chunks": 212, "entities": 380, "tile_entities": 40, "players": 0}],
@@ -38,7 +54,9 @@ FAKE_DIAGNOSTICS = {
 class FakePlugin:
     def __init__(self, url: str, token: str, console: bool):
         self.url, self.token = url, token
-        self.capabilities = ["chat", "whitelist", "diagnostics", "link"] + (["console"] if console else [])
+        self.capabilities = ["chat", "whitelist", "diagnostics", "link", "moderation", "stats", "inventory", "message",
+                             "roles"] + (["console", "console_stream"] if console else [])
+        self.console_stream = False
         self.online: list[dict] = []
         self.lagging = False
 
@@ -77,9 +95,16 @@ class FakePlugin:
         while not ws.closed:
             await asyncio.sleep(random.uniform(4, 9))
             p = random.choice(PLAYERS)
+            if self.console_stream:
+                await ws.send_str(Envelope(type="event.console", data={"lines": [
+                    f"[{time.strftime('%H:%M:%S')} INFO]: {p['name']}[/127.0.0.1:{random.randint(40000, 60000)}] did something"
+                ]}).to_json())
             if p not in self.online:
                 self.online.append(p)
                 env = Envelope(type="event.player_join", data={"player": p, "first_join": False})
+                await ws.send_str(env.to_json())
+                env = Envelope(type="event.player_groups", data={"player": p, "groups": ["default", "vip"],
+                                                                  "reason": "join"})
             elif random.random() < 0.5:
                 env = Envelope(type="event.player_chat", data={"player": p, "message": "hello from the fake server"})
             else:
@@ -103,6 +128,26 @@ class FakePlugin:
                      "cmd.diagnostics": "diagnostics", "cmd.link_result": "link"}.get(env.type)
             if env.type == "cmd.diagnostics":
                 out = reply_ok(env, "", FAKE_DIAGNOSTICS)
+            elif env.type == "cmd.player_stats":
+                out = reply_ok(env, "", {"name": env.data["player_name"], "uuid": PLAYERS[0]["uuid"], "online": True,
+                                         "stats": FAKE_STATS, "advancements": {"done": 58, "total": 122}})
+            elif env.type == "cmd.inventory":
+                out = reply_ok(env, "", dict(FAKE_INVENTORY, name=env.data["player_name"], uuid=PLAYERS[0]["uuid"]))
+            elif env.type == "cmd.moderate":
+                out = reply_ok(env, f"(fake) {env.data['action']} {env.data['player_name']}")
+            elif env.type == "cmd.message":
+                out = reply_ok(env, f"Sent to {env.data['player_name']}")
+            elif env.type == "cmd.tab_complete":
+                words = ["say", "list", "time", "weather", "whitelist", "gamemode", "give", "tp"]
+                last = env.data["command"].split(" ")[-1]
+                out = reply_ok(env, "", {"suggestions": [w for w in words if w.startswith(last)]})
+            elif env.type == "cmd.set_features":
+                self.console_stream = env.data["console_stream"]
+                print("Console stream", "on" if self.console_stream else "off")
+                out = reply_ok(env, "ok")
+            elif env.type == "cmd.set_groups":
+                print("Set groups:", env.data)
+                out = reply_ok(env, "ok")
             elif env.type == "cmd.link_result":
                 print("Link result for czrbyn:", env.data["message"])
                 out = reply_ok(env, "sent")

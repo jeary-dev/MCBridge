@@ -42,6 +42,8 @@ class Settings:
     chat_bridge: bool
     max_servers_per_guild: int
     trust_cloudflare: bool = False
+    demo_server_id: str | None = None
+    demo_origins: tuple[str, ...] = ("https://mcbridge.dev", "http://localhost:3000")
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -56,4 +58,7 @@ class Settings:
             chat_bridge=_bool(os.environ.get("CHAT_BRIDGE"), True),
             max_servers_per_guild=int(os.environ.get("MAX_SERVERS_PER_GUILD", "3")),
             trust_cloudflare=_bool(os.environ.get("TRUST_CLOUDFLARE"), False),
+            demo_server_id=os.environ.get("DEMO_SERVER_ID") or None,
+            demo_origins=tuple(o.strip() for o in os.environ.get(
+                "DEMO_ORIGINS", "https://mcbridge.dev,http://localhost:3000").split(",") if o.strip()),
         )

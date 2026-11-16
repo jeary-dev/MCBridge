@@ -34,6 +34,12 @@ Content-Type: application/json
 
 Codes are case-insensitive, and `-` or spaces are ignored. The token is only ever sent in this one response.
 
+### Live demo
+`GET /v1/demo` returns public JSON for the one server set as `DEMO_SERVER_ID` (status, players, TPS, the last hour of samples and the last 30 chat/feed events), for the live demo on mcbridge.dev. CORS allows the origins in `DEMO_ORIGINS`. 404 if no demo server is configured.
+
+### Health check
+`GET /health` answers `200 ok` when the gateway is running and the Discord bot is connected, or `503 unhealthy: <reason>` otherwise. Point an uptime monitor at it.
+
 ## 2. Envelope
 
 Every message has the same outer shape:
@@ -144,6 +150,8 @@ No reply is expected.
 | `event.player_chat`        | `{ "player": Player, "message": str }` (max 256 chars) |
 | `event.player_death`       | `{ "player": Player, "message": str }` (plain-text death message) |
 | `event.player_advancement` | `{ "player": Player, "key": str, "title": str }` |
+| `event.console`            | `{ "lines": [str] }` (max 200 lines). Only sent after `cmd.set_features` turns the stream on. |
+| `event.player_groups`      | `{ "player": Player, "groups": [str], "reason": "join" \| "change" }`. Sent on join and when groups change (LuckPerms). |
 | `event.link_request`       | `{ "player": Player, "code": str }` (max 12 chars). A player typed `/discord link <code>`; the bot answers with `cmd.link_result`. |
 
 ## 6. Commands (bot → plugin)
@@ -156,6 +164,13 @@ Every command **must** get exactly one `reply`. The bot gives up waiting after 1
 | `cmd.whitelist` | `{ "actor": Actor, "action": "add" \| "remove", "player_name": str }` | `whitelist` |
 | `cmd.console`   | `{ "actor": Actor, "command": str }` (max 1000 chars, no leading `/`) | `console` |
 | `cmd.diagnostics` | `{ "actor": Actor }`. Reply `data` is described below. | `diagnostics` |
+| `cmd.moderate` | `{ "actor": Actor, "action": "kick" \| "ban" \| "unban" \| "op" \| "deop" \| "gamemode", "player_name": str, "reason"?: str, "gamemode"?: str }` | `moderation` |
+| `cmd.tab_complete` | `{ "actor": Actor, "command": str }`. Reply data: `{ "suggestions": [str] }` | `console` |
+| `cmd.player_stats` | `{ "actor": Actor, "player_name": str }`. Reply data: name, uuid, online, stats, advancements | `stats` |
+| `cmd.inventory` | `{ "actor": Actor, "player_name": str }`. Reply data: armor, offhand, hotbar, main (online players only) | `inventory` |
+| `cmd.message` | `{ "actor": Actor, "player_name": str, "message": str }` | `message` |
+| `cmd.set_features` | `{ "console_stream": bool }` | `console_stream` |
+| `cmd.set_groups` | `{ "player_uuid": str, "add": [str], "remove": [str] }` | `roles` |
 | `cmd.link_result` | `{ "player_uuid": str, "ok": bool, "message": str }` (max 256 chars). Tell a player how linking went. | `link` |
 
 The **plugin enforces its own capabilities** even if the bot asks: a `cmd.console` to a plugin that didn't advertise `console` is rejected with `FORBIDDEN`. Both sides check permissions independently.

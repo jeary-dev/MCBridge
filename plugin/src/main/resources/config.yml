@@ -10,8 +10,10 @@ bot-url: "wss://bot.mcbridge.dev/v1/plugin"
 # run /setup in Discord, then /mcbridge link <code> in-game, and it's saved here automatically.
 # Treat it like a password: anyone with it can pretend to be your server.
 token: ""
+
 # Check GitHub for new MCBridge versions (every 6 hours) and tell admins when one is out.
 update-check: true
+
 # What the bot is ALLOWED to do on this server.
 # The plugin checks these itself, so the bot can never do more than you allow here.
 allow:
@@ -19,11 +21,15 @@ allow:
   chat: true
   # Add/remove players from the whitelist
   whitelist: true
-  # Run ANY console command from Discord (op, stop, ban...).
+  # /mod in Discord: kick, ban, unban, op, deop and change game modes
+  moderation: false
+  # Role sync can add and remove permission groups (needs LuckPerms or Vault)
+  roles: true
+  # Run ANY console command from Discord (op, stop, ban...), and stream the console to a Discord channel.
   # Only turn this on if you fully trust everyone with admin access to the Discord bot.
   console: false
 
-
+# ─────────────────────────────────────────────────────────────
 #  Messages
 #  Use classic colour codes, MiniMessage, or both in the same line:
 #    &-codes:      &8 dark grey, &a green, &7 grey, &f white, &l bold, &r reset, &#3ddc84 hex
@@ -32,9 +38,11 @@ allow:
 #                  https://docs.advntr.dev/minimessage/format.html
 #  Write \<code> to show a literal <code>.
 #  Delete a line to go back to the built-in default.
+# ─────────────────────────────────────────────────────────────
 messages:
   # Shown in front of every MCBridge message
   prefix: "&8[&#3ddc84MCBridge&8] "
+
   # How Discord chat looks in-game.  Placeholders: <author> <message>
   discord-chat: "<hover:show_text:'<gray>Sent from Discord'><dark_gray>[</dark_gray><#5865f2>Discord</#5865f2><dark_gray>]</dark_gray> <#b5bac1><author></#b5bac1></hover><dark_gray> » </dark_gray><white><message>"
 
@@ -54,6 +62,9 @@ messages:
   linking: "<gray>Linking..."
   link-success: "<#3ddc84>Linked as <white><name></white>!</#3ddc84> <gray>Connecting to Discord..."
   link-failed: "<#ff6b6b>Linking failed:</#ff6b6b> <gray><reason>"
+
+  # /msg from Discord.  Placeholders: <author> <message>
+  private-message: "&8[&9Discord&8] &7<author> &8→ &7you&8: &f<message>"
 
   # Shown to admins when a new version is out (the whole line is clickable).  Placeholders: <current> <latest>
   update-available: "&7Update available: &f<current> &8→ &a<latest> &8· &7&nclick to download"

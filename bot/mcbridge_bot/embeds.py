@@ -217,3 +217,91 @@ def whitelist_request_embed(server_name: str, player: str, requester_id: str, *,
     if note:
         e.add_field(name="Note", value=safe(note), inline=False)
     return e
+
+
+STAT_LINES = [
+    ("play_time_ticks", "Play time", lambda v: fmt_duration(v // 20)),
+    ("deaths", "Deaths", None),
+    ("mob_kills", "Mob kills", None),
+    ("player_kills", "Player kills", None),
+    ("blocks_mined", "Blocks mined", None),
+    ("distance_cm", "Distance travelled", lambda v: f"{v / 100_000:,.1f} km"),
+    ("jumps", "Jumps", None),
+    ("damage_dealt", "Damage dealt", lambda v: f"{v / 20:,.0f} ❤"),
+    ("damage_taken", "Damage taken", lambda v: f"{v / 20:,.0f} ❤"),
+    ("fish_caught", "Fish caught", None),
+    ("animals_bred", "Animals bred", None),
+    ("villager_trades", "Villager trades", None),
+    ("items_enchanted", "Items enchanted", None),
+]
+
+
+def stats_embed(server_name: str, data: dict) -> discord.Embed:
+    stats = data.get("stats") or {}
+    status = "🟢 Online now" if data.get("online") else "Offline"
+    e = discord.Embed(title=f"{data.get('name', '?')}'s stats", description=status, color=BLUE)
+    e.set_author(name=server_name)
+    if data.get("uuid"):
+        e.set_thumbnail(url=f"https://mc-heads.net/body/{data['uuid']}/128")
+    for key, label, fmt in STAT_LINES:
+        if key in stats and stats[key] is not None:
+            value = stats[key]
+            e.add_field(name=label, value=fmt(value) if fmt else f"{value:,}")
+    adv = data.get("advancements")
+    if adv:
+        pct = 100 * adv["done"] / adv["total"] if adv.get("total") else 0
+        e.add_field(name="Advancements", value=f"{adv['done']}/{adv['total']} ({pct:.0f}%)")
+    if not data.get("online"):
+        e.set_footer(text="Blocks mined and advancements show while the player is online")
+    return e
+
+
+SLOT_NAMES = ["Helmet", "Chestplate", "Leggings", "Boots"]
+
+
+def _item(i: dict) -> str:
+    name = i.get("name") or i.get("type", "?").replace("_", " ").title()
+    text = f"{safe(name)}"
+    if i.get("amount", 1) > 1:
+        text = f"**{i['amount']}×** {text}"
+    extras = []
+    if i.get("enchantments"):
+        extras.append(", ".join(f"{e['id'].replace('_', ' ').title()} {e['level']}" for e in i["enchantments"][:4]))
+    if i.get("durability") is not None and i.get("max_durability"):
+        extras.append(f"{i['durability']}/{i['max_durability']}")
+    if extras:
+        text += f" · *{' · '.join(extras)}*"
+    return text
+
+
+def inventory_embed(server_name: str, data: dict) -> discord.Embed:
+    e = discord.Embed(title=f"{data.get('name', '?')}'s inventory", color=BLUE)
+    e.set_author(name=server_name)
+    if data.get("uuid"):
+        e.set_thumbnail(url=f"https://mc-heads.net/body/{data['uuid']}/128")
+    armor = data.get("armor") or []
+    lines = [f"{SLOT_NAMES[i]}: {_item(a)}" for i, a in enumerate(armor[:4]) if a]
+    if data.get("offhand"):
+        lines.append(f"Offhand: {_item(data['offhand'])}")
+    e.add_field(name="Equipped", value="\n".join(lines) or "*nothing*", inline=False)
+    hotbar = [f"`{i + 1}` {_item(it)}" for i, it in enumerate(data.get("hotbar") or []) if it]
+    e.add_field(name="Hotbar", value="\n".join(hotbar)[:1024] or "*empty*", inline=False)
+    main = [_item(it) for it in data.get("main") or [] if it]
+    if main:
+        text = "\n".join(main)
+        if len(text) > 1024:
+            text = text[:1000].rsplit("\n", 1)[0] + "\n…"
+        e.add_field(name=f"Backpack · {len(main)} stacks", value=text, inline=False)
+    else:
+        e.add_field(name="Backpack", value="*empty*", inline=False)
+    return e
+
+
+def rolesync_embed(server_name: str, links: list[dict]) -> discord.Embed:
+    arrows = {"both": "⇄", "minecraft-to-discord": "→", "discord-to-minecraft": "←"}
+    lines = [f"`{safe(link['group_name'])}` {arrows.get(link['direction'], '?')} <@&{link['role_id']}>" for link in links]
+    e = discord.Embed(title="🔗 Role sync", color=BLUE,
+                      description="\n".join(lines) or "*No role links yet. Add one with `/rolesync add`.*")
+    e.set_author(name=server_name)
+    e.set_footer(text="⇄ both ways · → Minecraft to Discord · ← Discord to Minecraft")
+    return e

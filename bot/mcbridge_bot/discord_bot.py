@@ -19,7 +19,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from . import charts, embeds, views
+from . import charts, embeds, sync, views
 from .alerts import Alert, AlertTracker
 from .config import Settings
 from .gateway import CommandFailed, Gateway, Session
@@ -33,6 +33,12 @@ HISTORY_S = 3600
 KEEP_HISTORY_S = 8 * 86400
 LINK_ATTEMPTS_PER_MINUTE = 10
 FEED_EVENTS = {"event.player_join", "event.player_leave", "event.player_death", "event.player_advancement"}
+FEED_KEYS = {"event.player_join": "join", "event.player_leave": "leave", "event.player_death": "death",
+             "event.player_advancement": "advancement"}
+CONSOLE_FLUSH_S = 2
+MAX_BUFFERED_CONSOLE_LINES = 2000
+STAT_RENAME_GAP_S = 330
+DEMO_EVENTS = 30
 SYSTEM_ACTOR = Actor(discord_id="0", name="MCBridge")
 
 
@@ -67,7 +73,11 @@ class MCBridgeBot(commands.Bot):
         self._synced: dict[str, int] = {}
         self._webhooks: dict[str, discord.Webhook] = {}
         self._link_attempts: dict[str, deque[float]] = defaultdict(deque)
+        self._console: dict[str, list[str]] = defaultdict(list)
+        self._stat_renamed: dict[str, float] = {}
+        self.demo_events: deque[dict] = deque(maxlen=DEMO_EVENTS)
         gateway.on(self._on_gateway)
+        gateway.demo_provider = self.demo_snapshot
         gateway.health_check = self.health_problem
         self.tree.on_error = self.on_app_command_error
 
@@ -86,6 +96,8 @@ class MCBridgeBot(commands.Bot):
         self.status_loop.start()
         self.recap_loop.start()
         self.presence_loop.start()
+        self.console_loop.start()
+        self.stat_loop.start()
 
     async def on_ready(self) -> None:
         log.info("logged in as %s, in %d Discord servers", self.user, len(self.guilds))
@@ -205,6 +217,7 @@ class MCBridgeBot(commands.Bot):
         elif what == "connected":
             alert = self.tracker.connected(sid)
             self._remember_icon(sid, details)
+            self.spawn(self.push_features(session))
             self.spawn(self.announce_link(record))
             self.spawn(self.refresh_status(record))
         elif what == "lost":
@@ -215,7 +228,9 @@ class MCBridgeBot(commands.Bot):
                 self.store.close_all_sessions(sid, now)
                 self.spawn(self.refresh_status(record))
         elif what == "event.player_chat":
-            self.spawn(self.post_chat(record, details))
+            if not self.chat_filtered(sid, details["message"]):
+                self.record_demo(sid, "chat", details["player"], details["message"])
+                self.spawn(self.post_chat(record, details))
         elif what in FEED_EVENTS:
             player = details["player"]
             if what == "event.player_join":
@@ -224,11 +239,188 @@ class MCBridgeBot(commands.Bot):
                 self.store.player_left(sid, player["uuid"], now)
             elif what == "event.player_death":
                 self.store.player_died(sid, player["uuid"])
-            self.spawn(self.post_feed(record, what, details))
+            self.record_demo(sid, FEED_KEYS[what], player, details.get("message") or details.get("title") or "")
+            if FEED_KEYS[what] not in self.feed_off(sid):
+                self.spawn(self.post_feed(record, what, details))
+        elif what == "event.console":
+            buffer = self._console[sid]
+            buffer.extend(details["lines"])
+            if len(buffer) > MAX_BUFFERED_CONSOLE_LINES:
+                del buffer[:len(buffer) - MAX_BUFFERED_CONSOLE_LINES]
+        elif what == "event.player_groups":
+            self.spawn(self.sync_roles(session, record, details))
         elif what == "event.link_request":
             self.spawn(self.handle_link_request(session, record, details))
         if alert is not None:
             self.spawn(self.send_alert(record, alert, session))
+
+    def feed_off(self, server_id: str) -> set[str]:
+        value = self.store.get_setting(server_id, "feed_off") or ""
+        return {v for v in value.split(",") if v}
+
+    def chat_filtered(self, server_id: str, message: str) -> bool:
+        words = self.store.get_setting(server_id, "chat_filter")
+        if not words:
+            return False
+        text = message.lower()
+        return any(w.strip().lower() in text for w in words.splitlines() if w.strip())
+
+    async def push_features(self, session: Session) -> None:
+        if "console_stream" not in session.capabilities:
+            return
+        enabled = bool(self.store.get_channel(session.server_id, "console"))
+        try:
+            await session.command(Envelope(type="cmd.set_features", data={"console_stream": enabled}))
+        except CommandFailed:
+            pass
+
+    def refresh_features(self, server_id: str) -> None:
+        session = self.gateway.sessions.get(server_id)
+        if session is not None:
+            self.spawn(self.push_features(session))
+
+    @tasks.loop(seconds=CONSOLE_FLUSH_S)
+    async def console_loop(self) -> None:
+        for sid in list(self._console):
+            lines = self._console.pop(sid, [])
+            if not lines:
+                continue
+            record = self.store.get_server(sid)
+            channel = await self.channel_for(record, "console") if record else None
+            if channel is None:
+                continue
+            for block in sync.console_blocks(lines):
+                try:
+                    await channel.send(block, allowed_mentions=discord.AllowedMentions.none())
+                except discord.HTTPException as e:
+                    log.warning("console send failed for %s: %s", sid, e)
+                    break
+
+    @console_loop.before_loop
+    async def _before_console_loop(self) -> None:
+        await self.wait_until_ready()
+
+    async def handle_console_message(self, message: discord.Message, record: ServerRecord) -> None:
+        if not getattr(message.author, "guild_permissions", None) or not message.author.guild_permissions.administrator:
+            return
+        command_text = message.content.strip().lstrip("/")
+        if not command_text:
+            return
+        session = self.gateway.sessions.get(record.server_id)
+        if session is None or "console" not in session.capabilities:
+            await message.add_reaction("🔴")
+            return
+        self.store.audit(record.guild_id, record.server_id, str(message.author.id), message.author.name,
+                         "console", command_text[:1000], "sent (console channel)")
+        try:
+            await session.command(command("cmd.console", actor_of(message.author), command=command_text[:1000]))
+            await message.add_reaction("✅")
+        except CommandFailed as e:
+            await message.add_reaction("❌")
+            await message.reply(f"❌ {embeds.safe(e.message)}", mention_author=False)
+
+    @tasks.loop(minutes=5)
+    async def stat_loop(self) -> None:
+        for guild in list(self.guilds):
+            for record in self.store.servers_for_guild(str(guild.id)):
+                await self.update_stat_channel(record)
+
+    @stat_loop.before_loop
+    async def _before_stat_loop(self) -> None:
+        await self.wait_until_ready()
+
+    async def update_stat_channel(self, record: ServerRecord) -> None:
+        cid = self.store.get_channel(record.server_id, "stat")
+        if not cid:
+            return
+        channel = self.get_channel(int(cid))
+        if channel is None or str(channel.guild.id) != record.guild_id:
+            return
+        session = self.gateway.sessions.get(record.server_id)
+        hb = session.heartbeat if session else None
+        name = sync.stat_channel_name(session is not None, len(hb["players"]) if hb else None,
+                                      hb["max_players"] if hb else None)
+        if channel.name == name or time.monotonic() - self._stat_renamed.get(cid, -1e9) < STAT_RENAME_GAP_S:
+            return
+        self._stat_renamed[cid] = time.monotonic()
+        try:
+            await channel.edit(name=name, reason="MCBridge stat channel")
+        except discord.HTTPException as e:
+            log.warning("couldn't rename stat channel %s: %s", cid, e)
+
+    async def sync_roles(self, session: Session, record: ServerRecord, data: dict) -> None:
+        links = self.store.role_links(record.server_id)
+        if not links:
+            return
+        player = data["player"]
+        discord_id = self.store.linked_discord(record.guild_id, player["uuid"])
+        if discord_id is None:
+            return
+        await self.wait_until_ready()
+        guild = self.get_guild(int(record.guild_id))
+        if guild is None:
+            return
+        try:
+            member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+        except discord.HTTPException:
+            return
+        member_roles = {str(r.id) for r in member.roles}
+        groups = list(data["groups"])
+
+        if data.get("reason", "join") == "join" and "roles" in session.capabilities:
+            add_groups, remove_groups = sync.groups_for_minecraft(links, member_roles, groups)
+            if add_groups or remove_groups:
+                try:
+                    await session.command(Envelope(type="cmd.set_groups", data={
+                        "player_uuid": player["uuid"], "add": add_groups, "remove": remove_groups}))
+                    groups = [g for g in groups if g.lower() not in remove_groups] + add_groups
+                except CommandFailed as e:
+                    log.warning("role sync to minecraft failed for %s: %s", record.server_id, e)
+
+        add_roles, remove_roles = sync.roles_for_discord(links, groups, member_roles)
+        add = [r for r in (guild.get_role(int(i)) for i in add_roles) if r is not None]
+        remove = [r for r in (guild.get_role(int(i)) for i in remove_roles) if r is not None]
+        try:
+            if add:
+                await member.add_roles(*add, reason=f"MCBridge role sync ({player['name']})")
+            if remove:
+                await member.remove_roles(*remove, reason=f"MCBridge role sync ({player['name']})")
+        except discord.HTTPException as e:
+            log.warning("role sync to discord failed in %s: %s", record.guild_id, e)
+
+    def record_demo(self, server_id: str, kind: str, player: dict | None, text: str) -> None:
+        if server_id != self.settings.demo_server_id:
+            return
+        self.demo_events.append({"ts": int(time.time()), "type": kind,
+                                 "player": {"name": player["name"], "uuid": player.get("uuid")} if player else None,
+                                 "text": text[:256]})
+
+    def demo_snapshot(self) -> dict | None:
+        sid = self.settings.demo_server_id
+        record = self.store.get_server(sid) if sid else None
+        if record is None:
+            return None
+        session = self.gateway.sessions.get(sid)
+        hb = session.heartbeat if session else None
+        hello = session.hello if session else {}
+        now = int(time.time())
+        return {
+            "name": record.name,
+            "online": session is not None,
+            "address": record.address,
+            "version": f"{hello.get('platform', '').title()} {hello.get('mc_version', '')}".strip() or None,
+            "players": {"online": len(hb["players"]) if hb else 0, "max": hb["max_players"] if hb else 0,
+                        "list": [{"name": p["name"], "uuid": p["uuid"]} for p in (hb["players"] if hb else [])]},
+            "tps": hb["tps"] if hb else None,
+            "mspt": hb["mspt"] if hb else None,
+            "memory": hb["memory"] if hb else None,
+            "uptime_s": hb["uptime_s"] if hb else None,
+            "lagging": self.tracker.is_lagging(sid),
+            "history": [{"ts": x["ts"], "players": x["players"], "tps": x["tps"]}
+                        for x in self.store.samples(sid, now - HISTORY_S)],
+            "events": list(self.demo_events),
+            "updated_at": now,
+        }
 
     def _remember_icon(self, server_id: str, hello: dict) -> None:
         icon = hello.get("icon")
@@ -496,6 +688,8 @@ class MCBridgeBot(commands.Bot):
     async def on_message(self, message: discord.Message) -> None:
         if not self.settings.chat_bridge or message.author.bot or message.webhook_id or message.guild is None:
             return
+        for record in self.store.servers_for_channel(str(message.channel.id), "console"):
+            await self.handle_console_message(message, record)
         servers = self.store.servers_for_channel(str(message.channel.id), "chat")
         if not servers:
             return
@@ -507,6 +701,7 @@ class MCBridgeBot(commands.Bot):
         if len(text) > MAX_CHAT_LEN:
             text = text[:MAX_CHAT_LEN - 1] + "…"
         for record in servers:
+            self.record_demo(record.server_id, "discord_chat", {"name": message.author.display_name}, text)
             session = self.gateway.sessions.get(record.server_id)
             if session is None:
                 await message.add_reaction("🔴")

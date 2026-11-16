@@ -269,3 +269,19 @@ def test_clean_stop_skips_the_grace_period():
         finally:
             await client.close()
     run(go())
+
+
+def test_health_reports_problems():
+    async def go():
+        gw, *_ = setup()
+        client = await start(gw)
+        try:
+            ok = await client.get("/health")
+            assert ok.status == 200 and await ok.text() == "ok"
+            gw.health_check = lambda: "discord connection closed"
+            bad = await client.get("/health")
+            body = await bad.text()
+            assert bad.status == 503 and "ok" not in body and "discord" in body
+        finally:
+            await client.close()
+    run(go())

@@ -88,6 +88,8 @@ class Gateway:
                  trust_cloudflare: bool = False, lost_grace_s: float = LOST_GRACE_S):
         self.store = store
         self.health_check: Callable[[], str | None] | None = None
+        self.demo_provider: Callable[[], dict | None] | None = None
+        self.demo_origins: tuple[str, ...] = ()
         self.lost_grace_s = lost_grace_s
         self._pending_lost: dict[str, asyncio.Task] = {}
         self.trust_cloudflare = trust_cloudflare
@@ -108,6 +110,7 @@ class Gateway:
         app.router.add_get("/v1/plugin", self._handle)
         app.router.add_post("/v1/link", self._handle_link)
         app.router.add_get("/health", self._handle_health)
+        app.router.add_get("/v1/demo", self._handle_demo)
         app.on_startup.append(self._start_watchdog)
         app.on_cleanup.append(self._stop_watchdog)
         return app
@@ -123,6 +126,17 @@ class Gateway:
         if self.trust_cloudflare and request.headers.get("CF-Connecting-IP"):
             return request.headers["CF-Connecting-IP"]
         return request.remote or "?"
+
+    async def _handle_demo(self, request: web.Request) -> web.Response:
+        headers = {"Cache-Control": "public, max-age=5"}
+        origin = request.headers.get("Origin")
+        if origin and origin in self.demo_origins:
+            headers["Access-Control-Allow-Origin"] = origin
+            headers["Vary"] = "Origin"
+        data = self.demo_provider() if self.demo_provider else None
+        if data is None:
+            return web.json_response({"error": "no demo server configured"}, status=404, headers=headers)
+        return web.json_response(data, headers=headers)
 
     async def _handle_health(self, request: web.Request) -> web.Response:
         problem = self.health_check() if self.health_check else None

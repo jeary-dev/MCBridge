@@ -4,6 +4,7 @@ main: czr.mcbridge.MCBridge
 api-version: '1.21'
 description: Connects your server to the MCBridge Discord bot (live status, alerts, chat bridge, admin tools).
 author: czr
+softdepend: [LuckPerms, Vault]
 website: https://mcbridge.dev
 
 commands:

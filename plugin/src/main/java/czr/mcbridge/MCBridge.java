@@ -4,6 +4,7 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonObject;
 import czr.mcbridge.core.BridgeClient;
 import czr.mcbridge.core.Envelope;
+import czr.mcbridge.roles.PermissionsBridge;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.serializer.plain.PlainTextComponentSerializer;
 import org.bukkit.Bukkit;
@@ -17,6 +18,10 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.time.Duration;
 import java.util.Base64;
+import java.util.List;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Plugin entry point: wires the Minecraft server to a {@link BridgeClient}. */
 public final class MCBridge extends JavaPlugin {
@@ -26,6 +31,9 @@ public final class MCBridge extends JavaPlugin {
     private Messages messages;
     private UpdateNotifier updates;
     private HeartbeatSampler sampler;
+    private ConsoleStream consoleStream;
+    private PermissionsBridge permissions;
+    private final Map<UUID, List<String>> lastGroups = new ConcurrentHashMap<>();
     private boolean startAnnounced;
 
     @Override
@@ -35,10 +43,15 @@ public final class MCBridge extends JavaPlugin {
         sampler = new HeartbeatSampler(this);
         sampler.start();
         getServer().getPluginManager().registerEvents(new EventsListener(this), this);
-
         updates = new UpdateNotifier(this);
         getServer().getPluginManager().registerEvents(updates, this);
         updates.start();
+        consoleStream = new ConsoleStream(this);
+        permissions = PermissionsBridge.detect(this);
+        if (permissions != null) {
+            getLogger().info("Role sync will use " + permissions.name());
+            permissions.onGroupsChanged(this, p -> sendGroups(p, "change"));
+        }
 
         PluginCommand cmd = getCommand("mcbridge");
         if (cmd != null) {
@@ -57,6 +70,7 @@ public final class MCBridge extends JavaPlugin {
 
     @Override
     public void onDisable() {
+        if (consoleStream != null) consoleStream.disable();
         disconnect(true);
     }
 
@@ -83,6 +97,12 @@ public final class MCBridge extends JavaPlugin {
         }
         capabilities.add("diagnostics");
         capabilities.add("link");
+        capabilities.add("stats");
+        capabilities.add("inventory");
+        if (allowed("chat")) capabilities.add("message");
+        if (allowed("moderation")) capabilities.add("moderation");
+        if (allowed("console")) capabilities.add("console_stream");
+        if (permissions != null && allowed("roles", true)) capabilities.add("roles");
         JsonObject hello = new JsonObject();
         hello.addProperty("plugin_version", getPluginMeta().getVersion());
         hello.addProperty("platform", "paper");
@@ -106,6 +126,7 @@ public final class MCBridge extends JavaPlugin {
     }
 
     void disconnect(boolean serverStopping) {
+        if (consoleStream != null) consoleStream.disable();
         if (client == null) return;
         Envelope last = null;
         if (serverStopping) {
@@ -146,7 +167,38 @@ public final class MCBridge extends JavaPlugin {
     }
 
     boolean allowed(String capability) {
-        return getConfig().getBoolean("allow." + capability, false);
+        return allowed(capability, false);
+    }
+
+    boolean allowed(String capability, boolean byDefault) {
+        return getConfig().getBoolean("allow." + capability, byDefault);
+    }
+
+    PermissionsBridge permissions() {
+        return permissions;
+    }
+
+    void setConsoleStream(boolean enabled) {
+        if (enabled) consoleStream.enable();
+        else consoleStream.disable();
+    }
+
+    void sendGroups(Player player, String reason) {
+        if (permissions == null || !allowed("roles", true)) return;
+        List<String> groups = permissions.groups(player);
+        List<String> previous = lastGroups.put(player.getUniqueId(), groups);
+        if (reason.equals("change") && groups.equals(previous)) return;
+        JsonArray list = new JsonArray();
+        groups.forEach(list::add);
+        JsonObject data = new JsonObject();
+        data.add("player", player(player));
+        data.add("groups", list);
+        data.addProperty("reason", reason);
+        sendEvent("event.player_groups", data);
+    }
+
+    void forgetGroups(Player player) {
+        lastGroups.remove(player.getUniqueId());
     }
 
     void sendEvent(String type, JsonObject data) {

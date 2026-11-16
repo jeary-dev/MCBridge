@@ -1,18 +1,19 @@
 package czr.mcbridge;
 
+import czr.mcbridge.core.LegacyColors;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.minimessage.MiniMessage;
 import net.kyori.adventure.text.minimessage.tag.resolver.Placeholder;
 import net.kyori.adventure.text.minimessage.tag.resolver.TagResolver;
 import org.bukkit.command.CommandSender;
-import czr.mcbridge.core.LegacyColors;
 
 import java.util.Map;
 
 /**
- * Every message the plugin shows to players, written in MiniMessage and overridable in config.yml
- * under "messages". Values filled in from outside (Discord names, chat text) are inserted as plain
- * text, so nobody can inject colours, links or click actions.
+ * Every message the plugin shows to players, overridable in config.yml under "messages".
+ * Messages can use MiniMessage tags, classic &-codes (&8, &a, &#3ddc84), or a mix of both.
+ * Values filled in from outside (Discord names, chat text) are inserted as plain text,
+ * so nobody can inject colours, codes, links or click actions.
  */
 final class Messages {
     private static final MiniMessage MM = MiniMessage.miniMessage();
@@ -47,6 +48,8 @@ final class Messages {
             Map.entry("account-linking", "<gray>Linking your account..."),
             Map.entry("account-linked", "<" + GREEN + "><message>"),
             Map.entry("account-link-failed", "<" + RED + "><message>"),
+            Map.entry("private-message", "<dark_gray>[</dark_gray><#5865f2>Discord</#5865f2><dark_gray>]</dark_gray> "
+                    + "<#b5bac1><author></#b5bac1> <dark_gray>→</dark_gray> <gray>you</gray><dark_gray>:</dark_gray> <white><message>"),
             Map.entry("update-available", "<gray>Update available: <white><current></white> <dark_gray>→</dark_gray> "
                     + "<" + GREEN + "><latest></" + GREEN + "> <dark_gray>·</dark_gray> <gray><u>click to download</u>")
     );
