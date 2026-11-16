@@ -5,7 +5,8 @@
   options: [--url ws://localhost:8765/v1/plugin] [--console]
 
 It handshakes, sends heartbeats, makes up some player events, and answers commands.
-Press Ctrl+C to "crash" it (no stop event), or type 'stop' + Enter for a clean shutdown.
+Type 'stop' + Enter for a clean shutdown, 'lag' to toggle a lag spike, or 'link CODE' to link
+the fake player czrbyn to your Discord (get CODE with /account link). Ctrl+C "crashes" it.
 """
 from __future__ import annotations
 
@@ -24,11 +25,22 @@ PLAYERS = [{"uuid": "f759806f-e772-4945-8b79-c19266849be4", "name": "czrbyn"},
            {"uuid": "00000000-0000-4000-8000-000000000001", "name": "Steve"}]
 
 
+FAKE_DIAGNOSTICS = {
+    "worlds": [{"name": "world", "chunks": 1840, "entities": 4210, "tile_entities": 960, "players": 2},
+               {"name": "world_nether", "chunks": 212, "entities": 380, "tile_entities": 40, "players": 0}],
+    "top_chunks": [{"world": "world", "x": 12, "z": -30, "entities": 1150, "tile_entities": 4},
+                   {"world": "world", "x": -3, "z": 8, "entities": 240, "tile_entities": 310}],
+    "top_entities": [{"type": "CHICKEN", "count": 1210}, {"type": "ITEM", "count": 840},
+                     {"type": "ZOMBIE", "count": 320}],
+}
+
+
 class FakePlugin:
     def __init__(self, url: str, token: str, console: bool):
         self.url, self.token = url, token
-        self.capabilities = ["chat", "whitelist"] + (["console"] if console else [])
+        self.capabilities = ["chat", "whitelist", "diagnostics", "link"] + (["console"] if console else [])
         self.online: list[dict] = []
+        self.lagging = False
 
     async def run(self):
         async with aiohttp.ClientSession() as http:
@@ -52,7 +64,7 @@ class FakePlugin:
     async def _heartbeats(self, ws, interval):
         uptime = 0
         while not ws.closed:
-            tps = round(random.uniform(17.5, 20.0), 2)
+            tps = round(random.uniform(8.0, 12.0) if self.lagging else random.uniform(18.5, 20.0), 2)
             await ws.send_str(Envelope(type="heartbeat", data={
                 "tps": [tps, 19.9, 19.95], "mspt": round(random.uniform(8, 45), 1),
                 "players": self.online, "max_players": 20,
@@ -87,8 +99,14 @@ class FakePlugin:
             if not env.type.startswith("cmd."):
                 continue
             print("Command:", env.type, env.data)
-            needs = {"cmd.chat_send": "chat", "cmd.whitelist": "whitelist", "cmd.console": "console"}.get(env.type)
-            if needs is None:
+            needs = {"cmd.chat_send": "chat", "cmd.whitelist": "whitelist", "cmd.console": "console",
+                     "cmd.diagnostics": "diagnostics", "cmd.link_result": "link"}.get(env.type)
+            if env.type == "cmd.diagnostics":
+                out = reply_ok(env, "", FAKE_DIAGNOSTICS)
+            elif env.type == "cmd.link_result":
+                print("Link result for czrbyn:", env.data["message"])
+                out = reply_ok(env, "sent")
+            elif needs is None:
                 out = reply_error(env, ErrorCode.UNKNOWN_COMMAND, env.type)
             elif needs not in self.capabilities:
                 out = reply_error(env, ErrorCode.FORBIDDEN, f"{needs} is disabled in config.yml")
@@ -102,6 +120,12 @@ class FakePlugin:
             line = await loop.run_in_executor(None, sys.stdin.readline)
             if line == "":
                 return
+            if line.strip() == "lag":
+                self.lagging = not self.lagging
+                print("Lag spike", "on" if self.lagging else "off")
+            elif line.strip().startswith("link "):
+                await ws.send_str(Envelope(type="event.link_request", data={
+                    "player": PLAYERS[0], "code": line.split()[1]}).to_json())
             if line.strip() == "stop":
                 await ws.send_str(Envelope(type="event.server_stop", data={"reason": "shutdown"}).to_json())
                 await ws.close()

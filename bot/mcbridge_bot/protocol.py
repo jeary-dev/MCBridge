@@ -16,6 +16,7 @@ PROTOCOL_VERSION = 1
 MAX_FRAME_BYTES = 64 * 1024
 MAX_CHAT_LEN = 256
 MAX_CONSOLE_LEN = 1000
+MAX_ICON_CHARS = 24 * 1024
 
 
 class ProtocolError(Exception):
@@ -94,6 +95,12 @@ def _v_hello(d):
     caps = _require(d, "capabilities", list)
     if not all(isinstance(c, str) for c in caps):
         raise ProtocolError("capabilities must be strings")
+    if "icon" in d and d["icon"] is not None:
+        icon = _require(d, "icon", str)
+        if len(icon) > MAX_ICON_CHARS:
+            raise ProtocolError("icon is too large")
+    if "motd" in d and d["motd"] is not None:
+        _require(d, "motd", str)
 
 
 def _v_welcome(d):
@@ -139,7 +146,11 @@ VALIDATORS: dict[str, Callable[[dict], None]] = {
     "cmd.whitelist": lambda d: (Actor.from_dict(_require(d, "actor", dict)),
                                 _require_choice(d, "action", {"add", "remove"}),
                                 _require_text(d, "player_name", 16)),
+    "event.link_request": lambda d: (_v_player_only(d), _require_text(d, "code", 12)),
     "cmd.console": lambda d: _v_console(d),
+    "cmd.diagnostics": lambda d: Actor.from_dict(_require(d, "actor", dict)),
+    "cmd.link_result": lambda d: (_require(d, "player_uuid", str), _require(d, "ok", bool),
+                                  _require_text(d, "message", 256)),
     "reply": lambda d: _v_reply(d),
 }
 
@@ -153,6 +164,8 @@ def _v_console(d):
 
 def _v_reply(d):
     ok = _require(d, "ok", bool)
+    if "data" in d and d["data"] is not None:
+        _require(d, "data", dict)
     if not ok:
         err = _require(d, "error", dict)
         code = _require(err, "code", str)
@@ -213,8 +226,11 @@ def command(cmd_type: str, actor: Actor, **fields) -> Envelope:
     return Envelope(type=cmd_type, data={"actor": actor.to_dict(), **fields}).validate()
 
 
-def reply_ok(to: Envelope, result: str = "") -> Envelope:
-    return Envelope(type="reply", reply_to=to.id, data={"ok": True, "result": result}).validate()
+def reply_ok(to: Envelope, result: str = "", data: dict | None = None) -> Envelope:
+    payload = {"ok": True, "result": result}
+    if data is not None:
+        payload["data"] = data
+    return Envelope(type="reply", reply_to=to.id, data=payload).validate()
 
 
 def reply_error(to: Envelope, code: ErrorCode, message: str) -> Envelope:

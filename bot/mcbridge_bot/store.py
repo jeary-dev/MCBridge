@@ -54,6 +54,76 @@ CREATE TABLE IF NOT EXISTS settings (
     PRIMARY KEY (server_id, key)
 );
 
+CREATE TABLE IF NOT EXISTS samples (
+    server_id   TEXT NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
+    ts          INTEGER NOT NULL,
+    tps         REAL NOT NULL,
+    mspt        REAL NOT NULL,
+    players     INTEGER NOT NULL,
+    mem_used    INTEGER NOT NULL,
+    mem_max     INTEGER NOT NULL,
+    PRIMARY KEY (server_id, ts)
+);
+
+CREATE TABLE IF NOT EXISTS players (
+    server_id   TEXT NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
+    uuid        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    first_seen  INTEGER NOT NULL,
+    last_seen   INTEGER NOT NULL,
+    playtime_s  INTEGER NOT NULL DEFAULT 0,
+    joins       INTEGER NOT NULL DEFAULT 0,
+    deaths      INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (server_id, uuid)
+);
+CREATE INDEX IF NOT EXISTS players_by_name ON players(server_id, name COLLATE NOCASE);
+
+CREATE TABLE IF NOT EXISTS open_sessions (
+    server_id   TEXT NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
+    uuid        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    joined_at   INTEGER NOT NULL,
+    PRIMARY KEY (server_id, uuid)
+);
+
+CREATE TABLE IF NOT EXISTS session_log (
+    server_id   TEXT NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
+    uuid        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    started_at  INTEGER NOT NULL,
+    ended_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS session_log_by_time ON session_log(server_id, ended_at);
+
+CREATE TABLE IF NOT EXISTS account_links (
+    guild_id    TEXT NOT NULL,
+    discord_id  TEXT NOT NULL,
+    uuid        TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    linked_at   INTEGER NOT NULL,
+    PRIMARY KEY (guild_id, discord_id),
+    UNIQUE (guild_id, uuid)
+);
+
+CREATE TABLE IF NOT EXISTS account_codes (
+    code_hash   TEXT PRIMARY KEY,
+    guild_id    TEXT NOT NULL,
+    discord_id  TEXT NOT NULL,
+    expires_at  INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS whitelist_requests (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    server_id   TEXT NOT NULL REFERENCES servers(server_id) ON DELETE CASCADE,
+    discord_id  TEXT NOT NULL,
+    player      TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'pending',
+    created_at  INTEGER NOT NULL,
+    decided_by  TEXT,
+    channel_id  TEXT,
+    message_id  TEXT
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
     ts          INTEGER NOT NULL,
@@ -197,8 +267,207 @@ class Store:
         ids = [r.server_id for r in self.servers_for_guild(guild_id)]
         self.db.execute("DELETE FROM servers WHERE guild_id = ?", (guild_id,))
         self.db.execute("DELETE FROM link_codes WHERE guild_id = ?", (guild_id,))
+        self.db.execute("DELETE FROM account_links WHERE guild_id = ?", (guild_id,))
+        self.db.execute("DELETE FROM account_codes WHERE guild_id = ?", (guild_id,))
         self.db.commit()
         return ids
+
+    def add_sample(self, server_id: str, ts: int, heartbeat: dict) -> None:
+        mem = heartbeat["memory"]
+        self.db.execute(
+            "INSERT OR REPLACE INTO samples (server_id, ts, tps, mspt, players, mem_used, mem_max) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (server_id, ts, float(heartbeat["tps"][0]), float(heartbeat["mspt"]), len(heartbeat["players"]),
+             int(mem["used_mb"]), int(mem["max_mb"])))
+        self.db.commit()
+
+    def samples(self, server_id: str, since: int, until: int | None = None) -> list[dict]:
+        rows = self.db.execute(
+            "SELECT ts, tps, mspt, players, mem_used, mem_max FROM samples "
+            "WHERE server_id = ? AND ts >= ? AND ts <= ? ORDER BY ts",
+            (server_id, since, until if until is not None else 2**62))
+        return [dict(r) for r in rows]
+
+    def prune(self, older_than: int) -> None:
+        self.db.execute("DELETE FROM samples WHERE ts < ?", (older_than,))
+        self.db.execute("DELETE FROM session_log WHERE ended_at < ?", (older_than,))
+        self.db.execute("DELETE FROM account_codes WHERE expires_at < ?", (int(time.time()),))
+        self.db.commit()
+
+    def player_joined(self, server_id: str, uuid: str, name: str, ts: int) -> None:
+        self.db.execute(
+            "INSERT INTO players (server_id, uuid, name, first_seen, last_seen, joins) VALUES (?,?,?,?,?,1) "
+            "ON CONFLICT (server_id, uuid) DO UPDATE SET name = excluded.name, last_seen = excluded.last_seen, "
+            "joins = joins + 1", (server_id, uuid, name, ts, ts))
+        self.db.execute("INSERT OR IGNORE INTO open_sessions (server_id, uuid, name, joined_at) VALUES (?,?,?,?)",
+                        (server_id, uuid, name, ts))
+        self.db.commit()
+
+    def player_left(self, server_id: str, uuid: str, ts: int) -> None:
+        row = self.db.execute("SELECT * FROM open_sessions WHERE server_id = ? AND uuid = ?",
+                              (server_id, uuid)).fetchone()
+        if row is None:
+            return
+        self._close_session(row, ts)
+        self.db.commit()
+
+    def _close_session(self, row, ts: int) -> None:
+        played = max(0, ts - row["joined_at"])
+        self.db.execute("DELETE FROM open_sessions WHERE server_id = ? AND uuid = ?", (row["server_id"], row["uuid"]))
+        self.db.execute("UPDATE players SET playtime_s = playtime_s + ?, last_seen = ? WHERE server_id = ? AND uuid = ?",
+                        (played, ts, row["server_id"], row["uuid"]))
+        self.db.execute("INSERT INTO session_log (server_id, uuid, name, started_at, ended_at) VALUES (?,?,?,?,?)",
+                        (row["server_id"], row["uuid"], row["name"], row["joined_at"], ts))
+
+    def player_died(self, server_id: str, uuid: str) -> None:
+        self.db.execute("UPDATE players SET deaths = deaths + 1 WHERE server_id = ? AND uuid = ?", (server_id, uuid))
+        self.db.commit()
+
+    def sync_online(self, server_id: str, online: list[dict], ts: int) -> None:
+        online_ids = {p["uuid"] for p in online}
+        for row in self.db.execute("SELECT * FROM open_sessions WHERE server_id = ?", (server_id,)).fetchall():
+            if row["uuid"] not in online_ids:
+                self._close_session(row, ts)
+        open_ids = {r["uuid"] for r in self.db.execute("SELECT uuid FROM open_sessions WHERE server_id = ?",
+                                                        (server_id,))}
+        self.db.commit()
+        for p in online:
+            if p["uuid"] not in open_ids:
+                self.player_joined(server_id, p["uuid"], p["name"], ts)
+
+    def close_all_sessions(self, server_id: str, ts: int) -> None:
+        for row in self.db.execute("SELECT * FROM open_sessions WHERE server_id = ?", (server_id,)).fetchall():
+            self._close_session(row, ts)
+        self.db.commit()
+
+    def player(self, server_id: str, name_or_uuid: str, now: int | None = None) -> dict | None:
+        row = self.db.execute(
+            "SELECT * FROM players WHERE server_id = ? AND (uuid = ? OR name = ? COLLATE NOCASE) "
+            "ORDER BY last_seen DESC LIMIT 1", (server_id, name_or_uuid, name_or_uuid)).fetchone()
+        if row is None:
+            return None
+        out = dict(row)
+        live = self.db.execute("SELECT joined_at FROM open_sessions WHERE server_id = ? AND uuid = ?",
+                               (server_id, row["uuid"])).fetchone()
+        out["online"] = live is not None
+        if live is not None:
+            out["playtime_s"] += max(0, (now or int(time.time())) - live["joined_at"])
+        return out
+
+    def player_names(self, server_id: str, prefix: str, limit: int = 25) -> list[str]:
+        rows = self.db.execute(
+            "SELECT name FROM players WHERE server_id = ? AND name LIKE ? ESCAPE '\\' ORDER BY last_seen DESC LIMIT ?",
+            (server_id, prefix.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%", limit))
+        return [r["name"] for r in rows]
+
+    def top_players(self, server_id: str, limit: int = 10, now: int | None = None) -> list[dict]:
+        now = now or int(time.time())
+        rows = self.db.execute(
+            "SELECT p.uuid, p.name, p.playtime_s + COALESCE(? - o.joined_at, 0) AS playtime_s, "
+            "o.joined_at IS NOT NULL AS online "
+            "FROM players p LEFT JOIN open_sessions o ON o.server_id = p.server_id AND o.uuid = p.uuid "
+            "WHERE p.server_id = ? ORDER BY playtime_s DESC LIMIT ?", (now, server_id, limit))
+        return [dict(r) for r in rows]
+
+    def recap(self, server_id: str, since: int, until: int) -> dict:
+        samples = self.samples(server_id, since, until)
+        played: dict[str, dict] = {}
+        rows = list(self.db.execute(
+            "SELECT uuid, name, started_at, ended_at FROM session_log "
+            "WHERE server_id = ? AND ended_at > ? AND started_at < ?", (server_id, since, until)))
+        rows += [{"uuid": r["uuid"], "name": r["name"], "started_at": r["joined_at"], "ended_at": until}
+                 for r in self.db.execute("SELECT * FROM open_sessions WHERE server_id = ?", (server_id,))]
+        for r in rows:
+            secs = max(0, min(r["ended_at"], until) - max(r["started_at"], since))
+            entry = played.setdefault(r["uuid"], {"uuid": r["uuid"], "name": r["name"], "playtime_s": 0})
+            entry["playtime_s"] += secs
+        new_players = self.db.execute(
+            "SELECT COUNT(*) FROM players WHERE server_id = ? AND first_seen >= ? AND first_seen < ?",
+            (server_id, since, until)).fetchone()[0]
+        tps = [s["tps"] for s in samples]
+        return {
+            "samples": samples,
+            "online_minutes": len(samples),
+            "window_minutes": max(1, (until - since) // 60),
+            "peak_players": max((s["players"] for s in samples), default=0),
+            "avg_tps": sum(tps) / len(tps) if tps else None,
+            "lag_minutes": sum(1 for t in tps if t < 15),
+            "unique_players": len(played),
+            "new_players": new_players,
+            "playtime_s": sum(p["playtime_s"] for p in played.values()),
+            "top": sorted(played.values(), key=lambda p: p["playtime_s"], reverse=True)[:3],
+        }
+
+    def create_account_code(self, guild_id: str, discord_id: str) -> str:
+        raw = "".join(secrets.choice(LINK_CODE_ALPHABET) for _ in range(6))
+        self.db.execute("DELETE FROM account_codes WHERE guild_id = ? AND discord_id = ?", (guild_id, discord_id))
+        self.db.execute("INSERT INTO account_codes (code_hash, guild_id, discord_id, expires_at) VALUES (?,?,?,?)",
+                        (_hash(guild_id + ":" + raw), guild_id, discord_id, int(time.time()) + LINK_CODE_TTL_S))
+        self.db.commit()
+        return raw
+
+    def redeem_account_code(self, guild_id: str, code: str, uuid: str, name: str) -> str | None:
+        key = _hash(guild_id + ":" + normalize_code(code))
+        row = self.db.execute("SELECT * FROM account_codes WHERE code_hash = ? AND expires_at >= ?",
+                              (key, int(time.time()))).fetchone()
+        if row is None:
+            return None
+        self.db.execute("DELETE FROM account_codes WHERE code_hash = ?", (key,))
+        self.db.execute("DELETE FROM account_links WHERE guild_id = ? AND (discord_id = ? OR uuid = ?)",
+                        (guild_id, row["discord_id"], uuid))
+        self.db.execute("INSERT INTO account_links (guild_id, discord_id, uuid, name, linked_at) VALUES (?,?,?,?,?)",
+                        (guild_id, row["discord_id"], uuid, name, int(time.time())))
+        self.db.commit()
+        return row["discord_id"]
+
+    def linked_account(self, guild_id: str, discord_id: str) -> dict | None:
+        row = self.db.execute("SELECT * FROM account_links WHERE guild_id = ? AND discord_id = ?",
+                              (guild_id, discord_id)).fetchone()
+        return dict(row) if row else None
+
+    def linked_discord(self, guild_id: str, uuid: str) -> str | None:
+        row = self.db.execute("SELECT discord_id FROM account_links WHERE guild_id = ? AND uuid = ?",
+                              (guild_id, uuid)).fetchone()
+        return row["discord_id"] if row else None
+
+    def unlink_account(self, guild_id: str, discord_id: str) -> bool:
+        cur = self.db.execute("DELETE FROM account_links WHERE guild_id = ? AND discord_id = ?", (guild_id, discord_id))
+        self.db.commit()
+        return cur.rowcount > 0
+
+    def create_whitelist_request(self, server_id: str, discord_id: str, player: str) -> int:
+        cur = self.db.execute(
+            "INSERT INTO whitelist_requests (server_id, discord_id, player, created_at) VALUES (?,?,?,?)",
+            (server_id, discord_id, player, int(time.time())))
+        self.db.commit()
+        return cur.lastrowid
+
+    def pending_whitelist_request(self, server_id: str, discord_id: str) -> dict | None:
+        row = self.db.execute(
+            "SELECT * FROM whitelist_requests WHERE server_id = ? AND discord_id = ? AND status = 'pending'",
+            (server_id, discord_id)).fetchone()
+        return dict(row) if row else None
+
+    def whitelist_request(self, request_id: int) -> dict | None:
+        row = self.db.execute("SELECT * FROM whitelist_requests WHERE id = ?", (request_id,)).fetchone()
+        return dict(row) if row else None
+
+    def set_whitelist_request_message(self, request_id: int, channel_id: str, message_id: str) -> None:
+        self.db.execute("UPDATE whitelist_requests SET channel_id = ?, message_id = ? WHERE id = ?",
+                        (channel_id, message_id, request_id))
+        self.db.commit()
+
+    def decide_whitelist_request(self, request_id: int, status: str, decided_by: str) -> bool:
+        cur = self.db.execute(
+            "UPDATE whitelist_requests SET status = ?, decided_by = ? WHERE id = ? AND status = 'pending'",
+            (status, decided_by, request_id))
+        self.db.commit()
+        return cur.rowcount == 1
+
+    def reopen_whitelist_request(self, request_id: int) -> None:
+        self.db.execute("UPDATE whitelist_requests SET status = 'pending', decided_by = NULL WHERE id = ?",
+                        (request_id,))
+        self.db.commit()
 
     def audit(self, guild_id: str, server_id: str | None, actor_id: str, actor_name: str,
               action: str, detail: str = "", result: str = "") -> None:

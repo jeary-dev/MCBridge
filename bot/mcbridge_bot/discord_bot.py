@@ -1,30 +1,39 @@
-"""The Discord side of MCBridge: slash commands, live status, alerts, chat bridge and feed.
+"""The Discord side of MCBridge: reacts to everything the gateway sees and keeps Discord up to date.
 
 It runs in the SAME process as the gateway, so it can read live sessions directly
 (no extra network hop) and react to gateway events the moment they happen.
+Slash commands live in commands.py, buttons and menus in views.py.
 """
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
+import datetime as dt
+import io
 import logging
 import time
-from typing import Literal
+from collections import defaultdict, deque
 
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-from . import embeds
+from . import charts, embeds, views
 from .alerts import Alert, AlertTracker
 from .config import Settings
 from .gateway import CommandFailed, Gateway, Session
-from .protocol import MAX_CHAT_LEN, Actor, command
-from .store import LINK_CODE_TTL_S, ServerRecord, Store
+from .protocol import MAX_CHAT_LEN, Actor, Envelope, command
+from .store import ServerRecord, Store
 
 log = logging.getLogger("mcbridge.discord")
 
-STATUS_REFRESH_S = 30
+STATUS_REFRESH_S = 60
+HISTORY_S = 3600
+KEEP_HISTORY_S = 8 * 86400
+LINK_ATTEMPTS_PER_MINUTE = 10
 FEED_EVENTS = {"event.player_join", "event.player_leave", "event.player_death", "event.player_advancement"}
+SYSTEM_ACTOR = Actor(discord_id="0", name="MCBridge")
 
 
 class UserError(Exception):
@@ -35,6 +44,15 @@ def actor_of(user: discord.abc.User) -> Actor:
     return Actor(discord_id=str(user.id), name=user.display_name)
 
 
+def webhook_name(name: str) -> str:
+    cleaned = name.replace("discord", "d1scord").replace("Discord", "D1scord").replace("clyde", "c1yde")
+    return cleaned[:80] or "Player"
+
+
+def file_of(data: bytes, name: str) -> discord.File:
+    return discord.File(io.BytesIO(data), filename=name)
+
+
 class MCBridgeBot(commands.Bot):
     def __init__(self, store: Store, gateway: Gateway, settings: Settings):
         intents = discord.Intents.default()
@@ -43,11 +61,18 @@ class MCBridgeBot(commands.Bot):
                          allowed_mentions=discord.AllowedMentions.none(), help_command=None)
         self.store, self.gateway, self.settings = store, gateway, settings
         self.tracker = AlertTracker()
+        self.icons: dict[str, bytes] = {}
         self._tasks: set[asyncio.Task] = set()
+        self._last_sample: dict[str, int] = {}
+        self._synced: dict[str, int] = {}
+        self._webhooks: dict[str, discord.Webhook] = {}
+        self._link_attempts: dict[str, deque[float]] = defaultdict(deque)
         gateway.on(self._on_gateway)
         self.tree.on_error = self.on_app_command_error
 
     async def setup_hook(self) -> None:
+        from .commands import MCBridgeCommands
+        self.add_dynamic_items(views.ConfigureButton, views.WhitelistDecision)
         await self.add_cog(MCBridgeCommands(self))
         if self.settings.dev_guild_id:
             guild = discord.Object(id=self.settings.dev_guild_id)
@@ -58,11 +83,12 @@ class MCBridgeBot(commands.Bot):
             await self.tree.sync()
             log.info("slash commands synced globally (can take a while to show up)")
         self.status_loop.start()
+        self.recap_loop.start()
 
     async def on_ready(self) -> None:
         log.info("logged in as %s, in %d Discord servers", self.user, len(self.guilds))
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching,
-                                                             name="Minecraft servers | /help"))
+                                                             name="Minecraft servers | mcbridge.dev"))
 
     async def on_app_command_error(self, interaction: discord.Interaction, error: app_commands.AppCommandError):
         original = getattr(error, "original", error)
@@ -71,6 +97,8 @@ class MCBridgeBot(commands.Bot):
         elif isinstance(error, app_commands.MissingPermissions):
             text = "❌ You need the **" + ", ".join(p.replace("_", " ").title() for p in error.missing_permissions) \
                    + "** permission for that."
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            text = f"⏳ Slow down - try again in {error.retry_after:.0f}s."
         else:
             log.exception("command failed", exc_info=original)
             text = "❌ Something went wrong on our side. Try again in a moment."
@@ -103,35 +131,85 @@ class MCBridgeBot(commands.Bot):
             return None
         return channel
 
-    def status_of(self, record: ServerRecord) -> discord.Embed:
+    def status_of(self, record: ServerRecord) -> tuple[discord.Embed, list[discord.File]]:
         session = self.gateway.sessions.get(record.server_id)
-        return embeds.status_embed(
+        now = int(time.time())
+        samples = self.store.samples(record.server_id, now - HISTORY_S)
+        files = []
+        icon = self.icons.get(record.server_id)
+        if icon:
+            files.append(file_of(icon, embeds.ICON_FILE))
+        if samples:
+            hb = session.heartbeat if session else None
+            files.append(file_of(charts.activity_chart(samples, now - HISTORY_S, now,
+                                                       max_players=hb["max_players"] if hb else None),
+                                 embeds.CHART_FILE))
+        embed = embeds.status_embed(
             record.name,
             session.hello if session else None,
             session.heartbeat if session else None,
             online=session is not None,
             lagging=self.tracker.is_lagging(record.server_id),
-            offline_reason=self.tracker.last_lost(record.server_id))
+            offline_reason=self.tracker.last_lost(record.server_id),
+            address=record.address,
+            has_icon=bool(icon),
+            has_chart=bool(samples),
+            last_seen=samples[-1]["ts"] if samples else None)
+        return embed, files
 
     async def _on_gateway(self, session: Session, what: str, details: dict) -> None:
-        record = session.record
+        record = self.store.get_server(session.server_id) or session.record
+        sid = record.server_id
+        now = int(time.time())
         alert: Alert | None = None
         if what == "heartbeat":
-            alert = self.tracker.heartbeat(record.server_id, details)
+            alert = self.tracker.heartbeat(sid, details)
+            minute = now - now % 60
+            if self._last_sample.get(sid) != minute:
+                self._last_sample[sid] = minute
+                self.store.add_sample(sid, minute, details)
+            if self._synced.get(sid) != id(session):
+                self._synced[sid] = id(session)
+                self.store.sync_online(sid, details["players"], now)
         elif what == "connected":
-            alert = self.tracker.connected(record.server_id)
+            alert = self.tracker.connected(sid)
+            self._remember_icon(sid, details)
             self.spawn(self.announce_link(record))
             self.spawn(self.refresh_status(record))
         elif what == "lost":
-            alert = self.tracker.lost(record.server_id, details["reason"])
-            if details["reason"] != "unlinked":
+            reason = details["reason"]
+            alert = self.tracker.lost(sid, reason)
+            self._synced.pop(sid, None)
+            if reason != "unlinked":
+                self.store.close_all_sessions(sid, now)
                 self.spawn(self.refresh_status(record))
         elif what == "event.player_chat":
             self.spawn(self.post_chat(record, details))
         elif what in FEED_EVENTS:
+            player = details["player"]
+            if what == "event.player_join":
+                self.store.player_joined(sid, player["uuid"], player["name"], now)
+            elif what == "event.player_leave":
+                self.store.player_left(sid, player["uuid"], now)
+            elif what == "event.player_death":
+                self.store.player_died(sid, player["uuid"])
             self.spawn(self.post_feed(record, what, details))
+        elif what == "event.link_request":
+            self.spawn(self.handle_link_request(session, record, details))
         if alert is not None:
-            self.spawn(self.send_alert(record, alert))
+            self.spawn(self.send_alert(record, alert, session))
+
+    def _remember_icon(self, server_id: str, hello: dict) -> None:
+        icon = hello.get("icon")
+        if not icon:
+            self.icons.pop(server_id, None)
+            return
+        try:
+            data = base64.b64decode(icon, validate=True)
+        except (binascii.Error, ValueError):
+            return
+        if data[:8] == b"\x89PNG\r\n\x1a\n":
+            self.icons[server_id] = data
 
     async def announce_link(self, record: ServerRecord) -> None:
         if self.store.get_setting(record.server_id, "announced"):
@@ -140,31 +218,77 @@ class MCBridgeBot(commands.Bot):
         await self.wait_until_ready()
         channel = await self.channel_for(record, "alerts")
         if channel:
-            e = discord.Embed(title="✅ Linked!", color=embeds.GREEN,
-                              description=f"**{embeds.safe(record.name)}** is now connected to this Discord.\n"
-                                          "Alerts will show up here. Next steps:\n"
-                                          "• `/status live:True` for an auto-updating status message\n"
-                                          "• `/channel kind:chat` to bridge chat\n"
-                                          "• `/alerts role:` to ping a role when something breaks")
-            await channel.send(embed=e)
+            e = discord.Embed(title=f"✅ {record.name} is linked!", color=embeds.GREEN,
+                              description="Alerts will show up in this channel.\n\n"
+                                          "Open the settings to pick channels for the **chat bridge**, the "
+                                          "**player feed** and **whitelist requests**, choose a role to ping, "
+                                          "and post a **live status** message.")
+            await channel.send(embed=e, view=views.configure_button(record.server_id))
 
-    async def send_alert(self, record: ServerRecord, alert: Alert) -> None:
+    async def send_alert(self, record: ServerRecord, alert: Alert, session: Session | None = None) -> None:
         await self.wait_until_ready()
         channel = await self.channel_for(record, "alerts")
         if channel is None:
             return
+        diagnostics = None
+        if alert.kind == "lagging" and session is not None and "diagnostics" in session.capabilities:
+            try:
+                reply = await session.command(command("cmd.diagnostics", SYSTEM_ACTOR), timeout=8)
+                diagnostics = reply.get("data")
+            except CommandFailed:
+                pass
         role_id = self.store.get_setting(record.server_id, "alert_role")
         content, mentions = None, discord.AllowedMentions.none()
         if alert.ping and role_id:
             content = f"<@&{role_id}>"
             mentions = discord.AllowedMentions(roles=[discord.Object(id=int(role_id))])
-        await channel.send(content=content, embed=embeds.alert_embed(record.name, alert), allowed_mentions=mentions)
+        await channel.send(content=content, embed=embeds.alert_embed(record.name, alert, diagnostics),
+                           allowed_mentions=mentions)
+
+    async def chat_webhook(self, record: ServerRecord, channel) -> discord.Webhook | None:
+        if not isinstance(channel, discord.TextChannel):
+            return None
+        stored = self.store.get_setting(record.server_id, "chat_webhook")
+        if stored:
+            channel_id, _, url = stored.partition("|")
+            if channel_id == str(channel.id):
+                hook = self._webhooks.get(url)
+                if hook is None:
+                    hook = discord.Webhook.from_url(url, client=self)
+                    self._webhooks[url] = hook
+                return hook
+        if not channel.permissions_for(channel.guild.me).manage_webhooks:
+            return None
+        try:
+            hooks = await channel.webhooks()
+            hook = next((h for h in hooks if h.user and self.user and h.user.id == self.user.id and h.token), None)
+            if hook is None:
+                hook = await channel.create_webhook(name="MCBridge", reason="MCBridge chat bridge")
+        except discord.HTTPException as e:
+            log.warning("couldn't set up a chat webhook in %s: %s", channel.id, e)
+            return None
+        self.store.set_setting(record.server_id, "chat_webhook", f"{channel.id}|{hook.url}")
+        self._webhooks[hook.url] = hook
+        return hook
 
     async def post_chat(self, record: ServerRecord, data: dict) -> None:
         await self.wait_until_ready()
         channel = await self.channel_for(record, "chat")
-        if channel:
-            await channel.send(f"**{embeds.safe(data['player']['name'])}**: {embeds.safe(data['message'])}")
+        if channel is None:
+            return
+        player = data["player"]
+        hook = await self.chat_webhook(record, channel)
+        if hook is not None:
+            try:
+                await hook.send(embeds.safe(data["message"]), username=webhook_name(player["name"]),
+                                avatar_url=embeds.head_url(player["uuid"], 128),
+                                allowed_mentions=discord.AllowedMentions.none())
+                return
+            except discord.NotFound:
+                self.store.set_setting(record.server_id, "chat_webhook", None)
+            except discord.HTTPException as e:
+                log.warning("webhook send failed: %s", e)
+        await channel.send(f"**{embeds.safe(player['name'])}**: {embeds.safe(data['message'])}")
 
     async def post_feed(self, record: ServerRecord, event_type: str, data: dict) -> None:
         await self.wait_until_ready()
@@ -191,15 +315,155 @@ class MCBridgeBot(commands.Bot):
         channel = self.get_channel(int(channel_id))
         if channel is None or getattr(channel, "guild", None) is None or str(channel.guild.id) != record.guild_id:
             return
+        embed, files = self.status_of(record)
         try:
-            await channel.get_partial_message(int(message_id)).edit(embed=self.status_of(record))
+            await channel.get_partial_message(int(message_id)).edit(embed=embed, attachments=files)
         except discord.NotFound:
             self.store.set_setting(record.server_id, "status_message", None)
         except discord.HTTPException as e:
             log.warning("couldn't update status for %s: %s", record.server_id, e)
 
+    def recap_message(self, record: ServerRecord, until: int | None = None) -> tuple[discord.Embed, list]:
+        until = until or int(time.time())
+        since = until - 86400
+        r = self.store.recap(record.server_id, since, until)
+        files = []
+        if r["samples"]:
+            png = charts.activity_chart(charts.bucket(r["samples"], 900), since, until, step=900)
+            files.append(file_of(png, embeds.CHART_FILE))
+        return embeds.recap_embed(record.name, r, has_chart=bool(files)), files
+
+    @tasks.loop(minutes=5)
+    async def recap_loop(self) -> None:
+        now = dt.datetime.now(dt.timezone.utc)
+        today = now.date().isoformat()
+        for guild in list(self.guilds):
+            for record in self.store.servers_for_guild(str(guild.id)):
+                sid = record.server_id
+                if self.store.get_setting(sid, "recap") == "off":
+                    continue
+                if now.hour < int(self.store.get_setting(sid, "recap_hour") or 9):
+                    continue
+                if self.store.get_setting(sid, "recap_last") == today:
+                    continue
+                self.store.set_setting(sid, "recap_last", today)
+                embed, files = self.recap_message(record)
+                if not files:
+                    continue
+                channel = await self.channel_for(record, "alerts")
+                if channel:
+                    try:
+                        await channel.send(embed=embed, files=files)
+                    except discord.HTTPException as e:
+                        log.warning("couldn't post recap for %s: %s", sid, e)
+        self.store.prune(int(time.time()) - KEEP_HISTORY_S)
+
+    @recap_loop.before_loop
+    async def _before_recap_loop(self) -> None:
+        await self.wait_until_ready()
+
+    async def handle_link_request(self, session: Session, record: ServerRecord, data: dict) -> None:
+        player = data["player"]
+        attempts = self._link_attempts[record.server_id]
+        now = time.monotonic()
+        while attempts and now - attempts[0] > 60:
+            attempts.popleft()
+        if len(attempts) >= LINK_ATTEMPTS_PER_MINUTE:
+            await self._link_result(session, player["uuid"], False, "Too many link attempts. Wait a minute.")
+            return
+        attempts.append(now)
+
+        discord_id = self.store.redeem_account_code(record.guild_id, data["code"], player["uuid"], player["name"])
+        if discord_id is None:
+            await self._link_result(session, player["uuid"], False,
+                                    "That code is wrong or expired. Run /account link in Discord to get a new one.")
+            return
+        await self.wait_until_ready()
+        name = "your Discord account"
+        guild = self.get_guild(int(record.guild_id))
+        if guild is not None:
+            try:
+                member = guild.get_member(int(discord_id)) or await guild.fetch_member(int(discord_id))
+                name = member.display_name
+                role_id = self.store.get_setting(record.server_id, "link_role")
+                role = guild.get_role(int(role_id)) if role_id else None
+                if role is not None:
+                    await member.add_roles(role, reason=f"Linked Minecraft account {player['name']}")
+            except discord.HTTPException as e:
+                log.warning("couldn't give link role in %s: %s", record.guild_id, e)
+        self.store.audit(record.guild_id, record.server_id, discord_id, name, "account_link", player["name"], "ok")
+        await self._link_result(session, player["uuid"], True, f"Linked to Discord as {name}!")
+        try:
+            user = await self.fetch_user(int(discord_id))
+            await user.send(f"✅ Your Discord is now linked to **{embeds.safe(player['name'])}** on "
+                            f"**{embeds.safe(record.name)}**.")
+        except Exception:
+            pass
+
+    async def _link_result(self, session: Session, uuid: str, ok: bool, message: str) -> None:
+        if "link" not in session.capabilities:
+            return
+        try:
+            await session.command(Envelope(type="cmd.link_result",
+                                           data={"player_uuid": uuid, "ok": ok, "message": message[:256]}))
+        except CommandFailed:
+            pass
+
+    async def decide_whitelist(self, interaction: discord.Interaction, request_id: int, approve: bool) -> None:
+        if not views.can_manage(interaction):
+            await interaction.response.send_message("You need **Manage Server** to decide whitelist requests.",
+                                                    ephemeral=True)
+            return
+        req = self.store.whitelist_request(request_id)
+        record = self.store.get_server(req["server_id"]) if req else None
+        if req is None or record is None or record.guild_id != str(interaction.guild_id):
+            await interaction.response.send_message("This request no longer exists.", ephemeral=True)
+            return
+        if req["status"] != "pending":
+            await interaction.response.send_message(f"Already {req['status']}.", ephemeral=True)
+            return
+        await interaction.response.defer()
+
+        note = None
+        if approve:
+            session = self.gateway.sessions.get(record.server_id)
+            if session is None or "whitelist" not in session.capabilities:
+                await interaction.followup.send("The server is offline or doesn't allow whitelisting right now. "
+                                                "Try again when it's back.", ephemeral=True)
+                return
+            try:
+                reply = await session.command(command("cmd.whitelist", actor_of(interaction.user),
+                                                      action="add", player_name=req["player"]))
+                note = reply.get("result")
+            except CommandFailed as e:
+                await interaction.followup.send(f"❌ {embeds.safe(e.message)}", ephemeral=True)
+                return
+
+        status = "approved" if approve else "denied"
+        if not self.store.decide_whitelist_request(request_id, status, str(interaction.user.id)):
+            await interaction.followup.send("Someone else already decided this one.", ephemeral=True)
+            return
+        self.store.audit(record.guild_id, record.server_id, str(interaction.user.id), interaction.user.name,
+                         f"whitelist_request_{status}", req["player"])
+        linked = self.store.linked_account(record.guild_id, req["discord_id"])
+        await interaction.edit_original_response(
+            embed=embeds.whitelist_request_embed(record.name, req["player"], req["discord_id"], status=status,
+                                                 decided_by=str(interaction.user.id),
+                                                 linked_name=linked["name"] if linked else None, note=note),
+            view=None)
+        try:
+            user = await self.fetch_user(int(req["discord_id"]))
+            text = (f"✅ You've been whitelisted on **{embeds.safe(record.name)}** as **{req['player']}**. Have fun!"
+                    if approve else
+                    f"Your whitelist request for **{embeds.safe(record.name)}** ({req['player']}) was declined.")
+            if approve and record.address:
+                text += f"\nJoin with `{record.address}`"
+            await user.send(text)
+        except Exception:
+            pass
+
     async def on_message(self, message: discord.Message) -> None:
-        if not self.settings.chat_bridge or message.author.bot or message.guild is None:
+        if not self.settings.chat_bridge or message.author.bot or message.webhook_id or message.guild is None:
             return
         servers = self.store.servers_for_channel(str(message.channel.id), "chat")
         if not servers:
@@ -226,269 +490,3 @@ class MCBridgeBot(commands.Bot):
             self.gateway.disconnect_server(server_id)
             self.tracker.forget(server_id)
         log.info("removed from guild %s, cleaned up its servers", guild.id)
-
-
-class ConfirmUnlink(discord.ui.View):
-    def __init__(self, owner_id: int):
-        super().__init__(timeout=60)
-        self.owner_id = owner_id
-        self.confirmed: bool | None = None
-
-    async def interaction_check(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id != self.owner_id:
-            await interaction.response.send_message("Only the person who ran /unlink can confirm.", ephemeral=True)
-            return False
-        return True
-
-    @discord.ui.button(label="Unlink", style=discord.ButtonStyle.danger)
-    async def yes(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.confirmed = True
-        await interaction.response.defer()
-        self.stop()
-
-    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.secondary)
-    async def no(self, interaction: discord.Interaction, button: discord.ui.Button):
-        self.confirmed = False
-        await interaction.response.defer()
-        self.stop()
-
-
-class MCBridgeCommands(commands.Cog):
-    def __init__(self, bot: MCBridgeBot):
-        self.bot = bot
-        self.store = bot.store
-
-    def resolve(self, interaction: discord.Interaction, server: str | None) -> ServerRecord:
-        records = self.store.servers_for_guild(str(interaction.guild_id))
-        if not records:
-            raise UserError("No Minecraft server is linked here yet. Run `/setup` first.")
-        if server:
-            for r in records:
-                if server in (r.server_id, r.name) or server.lower() == r.name.lower():
-                    return r
-            raise UserError(f"No linked server called **{embeds.safe(server)}**. See `/servers`.")
-        if len(records) == 1:
-            return records[0]
-        raise UserError("This Discord has several servers linked, so pick one with the `server` option.")
-
-    def session(self, record: ServerRecord, capability: str | None = None) -> Session:
-        session = self.bot.gateway.sessions.get(record.server_id)
-        if session is None:
-            raise UserError(f"**{embeds.safe(record.name)}** is offline right now.")
-        if capability and capability not in session.capabilities:
-            raise UserError(f"**{embeds.safe(record.name)}** doesn't allow `{capability}`. The server owner can "
-                            f"turn it on with `allow.{capability}: true` in `plugins/MCBridge/config.yml`.")
-        return session
-
-    async def server_autocomplete(self, interaction: discord.Interaction, current: str):
-        records = self.store.servers_for_guild(str(interaction.guild_id))
-        return [app_commands.Choice(name=r.name[:100], value=r.server_id)
-                for r in records if current.lower() in r.name.lower()][:25]
-
-    def audit(self, interaction: discord.Interaction, server_id: str | None, action: str,
-              detail: str = "", result: str = "") -> None:
-        self.store.audit(str(interaction.guild_id), server_id, str(interaction.user.id),
-                         interaction.user.name, action, detail, result)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="help", description="What MCBridge can do")
-    async def help(self, interaction: discord.Interaction):
-        e = discord.Embed(title="MCBridge", color=embeds.GREEN,
-                          description="Connects your Minecraft server to Discord: live stats, alerts, chat and more.")
-        e.add_field(name="Getting started", inline=False,
-                    value="`/setup` - link a Minecraft server (gives you a code)\n`/servers` - list linked servers")
-        e.add_field(name="Status", inline=False,
-                    value="`/status` - TPS, MSPT, RAM and players\n`/status live:True` - a message that keeps updating")
-        e.add_field(name="Settings", inline=False,
-                    value="`/channel` - pick channels for alerts, chat and the join/leave feed\n"
-                          "`/alerts` - role to ping on crashes and lag\n`/unlink` - disconnect a server")
-        e.add_field(name="Admin", inline=False,
-                    value="`/whitelist` - add or remove players\n`/console` - run a console command (if allowed)\n"
-                          "`/audit` - who did what")
-        await interaction.response.send_message(embed=e, ephemeral=True)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="setup", description="Link a Minecraft server to this Discord")
-    @app_commands.describe(name="A name for the server, e.g. 'Survival SMP'")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def setup(self, interaction: discord.Interaction, name: app_commands.Range[str, 1, 40]):
-        guild_id = str(interaction.guild_id)
-        if len(self.store.servers_for_guild(guild_id)) >= self.bot.settings.max_servers_per_guild:
-            raise UserError(f"This Discord already has the maximum of "
-                            f"{self.bot.settings.max_servers_per_guild} servers. `/unlink` one first.")
-        code = self.store.create_link_code(guild_id, name.strip(), created_by=str(interaction.user.id),
-                                           channel_id=str(interaction.channel_id))
-        self.audit(interaction, None, "setup", name)
-
-        steps = ["Put **MCBridge.jar** in your server's `plugins` folder and restart the server."]
-        if self.bot.settings.public_ws_url:
-            steps.append(f"In `plugins/MCBridge/config.yml`, set `bot-url: \"{self.bot.settings.public_ws_url}\"`, "
-                         "then run `/mcbridge reload`.")
-        steps.append(f"In the server console (or in-game as an op), run:\n```\nmcbridge link {code}\n```")
-        e = discord.Embed(title=f"Link {embeds.safe(name)}", color=embeds.GREEN,
-                          description="\n".join(f"**{i}.** {s}" for i, s in enumerate(steps, 1)))
-        e.add_field(name="Code expires", value=f"<t:{int(time.time()) + LINK_CODE_TTL_S}:R> (works once)")
-        e.add_field(name="Alerts go to", value=f"<#{interaction.channel_id}> (change with `/channel`)")
-        e.set_footer(text="Keep this code private - anyone with it can link their server here.")
-        await interaction.response.send_message(embed=e, ephemeral=True)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="servers", description="List the Minecraft servers linked to this Discord")
-    async def servers(self, interaction: discord.Interaction):
-        records = self.store.servers_for_guild(str(interaction.guild_id))
-        if not records:
-            raise UserError("No servers linked yet. Run `/setup` to add one.")
-        lines = []
-        for r in records:
-            session = self.bot.gateway.sessions.get(r.server_id)
-            if session is None:
-                lines.append(f"🔴 **{embeds.safe(r.name)}** - offline")
-            else:
-                hb = session.heartbeat
-                players = f"{len(hb['players'])}/{hb['max_players']} players" if hb else "starting"
-                lines.append(f"🟢 **{embeds.safe(r.name)}** - {players}")
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Linked servers", description="\n".join(lines), color=embeds.GREEN))
-
-    @app_commands.guild_only()
-    @app_commands.command(name="status", description="Live TPS, MSPT, memory and players")
-    @app_commands.describe(server="Which server (only needed if you have several)",
-                           live="Post a status message here that updates itself every 30 seconds")
-    @app_commands.autocomplete(server=server_autocomplete)
-    async def status(self, interaction: discord.Interaction, server: str | None = None, live: bool = False):
-        record = self.resolve(interaction, server)
-        if not live:
-            await interaction.response.send_message(embed=self.bot.status_of(record))
-            return
-        if not interaction.user.guild_permissions.manage_guild:
-            raise UserError("You need **Manage Server** to post a live status message.")
-        channel = interaction.channel
-        if not channel.permissions_for(interaction.guild.me).send_messages:
-            raise UserError("I can't send messages in this channel.")
-        message = await channel.send(embed=self.bot.status_of(record))
-        self.store.set_setting(record.server_id, "status_message", f"{channel.id}:{message.id}")
-        self.audit(interaction, record.server_id, "status_live", f"#{channel.name}")
-        await interaction.response.send_message("✅ Live status posted. Delete it any time to stop it.",
-                                                ephemeral=True)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="channel", description="Choose where alerts, chat and the player feed go")
-    @app_commands.describe(kind="alerts = crashes & lag, chat = two-way chat bridge, feed = joins/leaves/deaths",
-                           channel="Leave empty to turn this off", server="Which server")
-    @app_commands.autocomplete(server=server_autocomplete)
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def channel(self, interaction: discord.Interaction, kind: Literal["alerts", "chat", "feed"],
-                      channel: discord.TextChannel | None = None, server: str | None = None):
-        record = self.resolve(interaction, server)
-        if channel is None:
-            self.store.set_channel(record.server_id, kind, None)
-            self.audit(interaction, record.server_id, "channel", f"{kind} off")
-            await interaction.response.send_message(f"✅ {kind.title()} turned off for **{embeds.safe(record.name)}**.",
-                                                    ephemeral=True)
-            return
-        perms = channel.permissions_for(interaction.guild.me)
-        if not (perms.view_channel and perms.send_messages and perms.embed_links):
-            raise UserError(f"I need **View Channel**, **Send Messages** and **Embed Links** in {channel.mention}.")
-        self.store.set_channel(record.server_id, kind, str(channel.id))
-        self.audit(interaction, record.server_id, "channel", f"{kind} -> #{channel.name}")
-        note = ""
-        if kind == "chat" and not self.bot.settings.chat_bridge:
-            note = "\n⚠️ Discord → Minecraft chat is turned off on this bot, so only Minecraft → Discord will work."
-        await interaction.response.send_message(
-            f"✅ {kind.title()} for **{embeds.safe(record.name)}** now goes to {channel.mention}.{note}", ephemeral=True)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="alerts", description="Choose a role to ping when a server crashes or lags")
-    @app_commands.describe(role="Leave empty to stop pinging", server="Which server")
-    @app_commands.autocomplete(server=server_autocomplete)
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def alerts(self, interaction: discord.Interaction, role: discord.Role | None = None,
-                     server: str | None = None):
-        record = self.resolve(interaction, server)
-        self.store.set_setting(record.server_id, "alert_role", str(role.id) if role else None)
-        self.audit(interaction, record.server_id, "alert_role", role.name if role else "none")
-        await interaction.response.send_message(
-            f"✅ {'Pinging ' + role.mention if role else 'No role pings'} for **{embeds.safe(record.name)}** alerts.",
-            ephemeral=True)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="unlink", description="Disconnect a Minecraft server from this Discord")
-    @app_commands.autocomplete(server=server_autocomplete)
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def unlink(self, interaction: discord.Interaction, server: str | None = None):
-        record = self.resolve(interaction, server)
-        view = ConfirmUnlink(interaction.user.id)
-        await interaction.response.send_message(
-            f"Unlink **{embeds.safe(record.name)}**? Its token stops working immediately and its settings are "
-            "deleted. You can always `/setup` it again.", view=view, ephemeral=True)
-        await view.wait()
-        if not view.confirmed:
-            await interaction.edit_original_response(content="Cancelled.", view=None)
-            return
-        self.store.delete_server(record.server_id)
-        self.bot.gateway.disconnect_server(record.server_id)
-        self.bot.tracker.forget(record.server_id)
-        self.audit(interaction, record.server_id, "unlink", record.name)
-        await interaction.edit_original_response(content=f"✅ **{embeds.safe(record.name)}** unlinked.", view=None)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="whitelist", description="Add or remove a player from the whitelist")
-    @app_commands.autocomplete(server=server_autocomplete)
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def whitelist(self, interaction: discord.Interaction, action: Literal["add", "remove"],
-                        player: app_commands.Range[str, 3, 16], server: str | None = None):
-        record = self.resolve(interaction, server)
-        session = self.session(record, "whitelist")
-        await interaction.response.defer(ephemeral=True)
-        try:
-            reply = await session.command(command("cmd.whitelist", actor_of(interaction.user),
-                                                  action=action, player_name=player))
-            result = reply.get("result") or "done"
-            self.audit(interaction, record.server_id, f"whitelist_{action}", player, "ok")
-            await interaction.followup.send(f"✅ {embeds.safe(result)}", ephemeral=True)
-        except CommandFailed as e:
-            self.audit(interaction, record.server_id, f"whitelist_{action}", player, e.code)
-            await interaction.followup.send(f"❌ {embeds.safe(e.message)}", ephemeral=True)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="console", description="Run a console command on the server (admins only)")
-    @app_commands.describe(cmd="The command, without a leading /", server="Which server")
-    @app_commands.autocomplete(server=server_autocomplete)
-    @app_commands.default_permissions(administrator=True)
-    @app_commands.checks.has_permissions(administrator=True)
-    async def console(self, interaction: discord.Interaction, cmd: app_commands.Range[str, 1, 1000],
-                      server: str | None = None):
-        record = self.resolve(interaction, server)
-        session = self.session(record, "console")
-        cmd = cmd.strip().lstrip("/")
-        if not cmd:
-            raise UserError("That command is empty.")
-        self.audit(interaction, record.server_id, "console", cmd, "sent")
-        await interaction.response.defer(ephemeral=True)
-        try:
-            reply = await session.command(command("cmd.console", actor_of(interaction.user), command=cmd))
-            output = (reply.get("result") or "(no output)")[:1800].replace("```", "'''")
-            self.audit(interaction, record.server_id, "console_result", cmd, "ok")
-            await interaction.followup.send(f"```\n{output}\n```", ephemeral=True)
-        except CommandFailed as e:
-            self.audit(interaction, record.server_id, "console_result", cmd, e.code)
-            await interaction.followup.send(f"❌ {embeds.safe(e.message)}", ephemeral=True)
-
-    @app_commands.guild_only()
-    @app_commands.command(name="audit", description="Recent MCBridge actions in this Discord")
-    @app_commands.default_permissions(manage_guild=True)
-    @app_commands.checks.has_permissions(manage_guild=True)
-    async def audit_log(self, interaction: discord.Interaction):
-        entries = self.store.recent_audit(str(interaction.guild_id), limit=15)
-        if not entries:
-            raise UserError("Nothing logged yet.")
-        lines = [f"<t:{e['ts']}:R> **{embeds.safe(e['actor_name'])}** `{e['action']}` "
-                 f"{embeds.safe(e['detail'] or '')[:60]} {('→ ' + e['result']) if e['result'] else ''}"
-                 for e in entries]
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Audit log", description="\n".join(lines), color=embeds.GREY), ephemeral=True)

@@ -1,0 +1,23 @@
+# ─────────────────────────────────────────────────────────────
+#  MCBridge - connects this server to Discord (mcbridge.dev)
+#  After editing, run /mcbridge reload (no restart needed).
+# ─────────────────────────────────────────────────────────────
+
+# Where the MCBridge bot is. Leave this as it is unless you host your own bot.
+bot-url: "wss://bot.mcbridge.dev/v1/plugin"
+
+# This server's secret token. You don't need to fill this in yourself:
+# run /setup in Discord, then /mcbridge link <code> in-game, and it's saved here automatically.
+# Treat it like a password: anyone with it can pretend to be your server.
+token: ""
+
+# What the bot is ALLOWED to do on this server.
+# The plugin checks these itself, so the bot can never do more than you allow here.
+allow:
+  # Show messages from Discord in the in-game chat
+  chat: true
+  # Add/remove players from the whitelist
+  whitelist: true
+  # Run ANY console command from Discord (op, stop, ban...).
+  # Only turn this on if you fully trust everyone with admin access to the Discord bot.
+  console: false

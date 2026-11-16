@@ -1,4 +1,4 @@
-# Python
+# --- Python (bot) ---
 __pycache__/
 *.pyc
 *.egg-info/
@@ -8,21 +8,23 @@ venv/
 dist/
 build/
 
-# Java / Maven
+# --- Java / Maven (plugin) ---
+plugin/target/
 target/
 *.class
 
-# IDEs
+# --- IDEs ---
 .idea/
 *.iml
 .vscode/
 
-# Secrets & local data (never commit these)
+# --- Secrets & local data (never commit these) ---
 .env
 *.db
 *.sqlite3
 tokens.json
+config.local.*
 
-# OS junk
+# --- OS junk ---
 .DS_Store
 Thumbs.db

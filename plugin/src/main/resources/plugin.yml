@@ -1,0 +1,26 @@
+name: MCBridge
+version: '${project.version}'
+main: czr.mcbridge.MCBridge
+api-version: '1.21'
+description: Connects your server to the MCBridge Discord bot (live status, alerts, chat bridge, admin tools).
+author: czr
+website: https://mcbridge.dev
+
+commands:
+  mcbridge:
+    description: Link to Discord, show the connection status, or reload the config.
+    usage: /mcbridge <status|reload|link <code>>
+    permission: mcbridge.admin
+  discord:
+    description: Link your Minecraft account to Discord.
+    usage: /discord link <code>
+    aliases: [dlink]
+    permission: mcbridge.link
+
+permissions:
+  mcbridge.admin:
+    description: Use /mcbridge
+    default: op
+  mcbridge.link:
+    description: Link your account with /discord link
+    default: true

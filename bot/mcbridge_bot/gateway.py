@@ -84,7 +84,8 @@ class Session:
 
 class Gateway:
     def __init__(self, store: Store, ping_check: PingCheck | None = None,
-                 heartbeat_interval_s: int = HEARTBEAT_INTERVAL_S, silence_timeout_s: float | None = None, trust_cloudflare: bool = False, lost_grace_s: float = LOST_GRACE_S):
+                 heartbeat_interval_s: int = HEARTBEAT_INTERVAL_S, silence_timeout_s: float | None = None,
+                 trust_cloudflare: bool = False, lost_grace_s: float = LOST_GRACE_S):
         self.store = store
         self.lost_grace_s = lost_grace_s
         self._pending_lost: dict[str, asyncio.Task] = {}
@@ -203,7 +204,10 @@ class Gateway:
                 for fut in session.pending.values():
                     if not fut.done():
                         fut.set_exception(CommandFailed("DISCONNECTED", "plugin disconnected"))
-                await self._on_lost(session)
+                if session.unlinked or session.clean_stop or self.lost_grace_s <= 0:
+                    await self._on_lost(session)
+                else:
+                    self._pending_lost[record.server_id] = asyncio.create_task(self._lost_after_grace(session))
         return ws
 
     async def _lost_after_grace(self, session: Session) -> None:
